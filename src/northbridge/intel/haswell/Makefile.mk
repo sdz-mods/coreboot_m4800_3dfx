@@ -7,7 +7,6 @@ bootblock-y += bootblock.c
 ramstage-y += memmap.c
 ramstage-y += northbridge.c
 ramstage-y += pcie.c
-ramstage-y += gma.c
 
 ramstage-y += acpi.c
 ramstage-y += minihd.c

@@ -36,6 +36,21 @@ static void haswell_setup_bars(void)
 	printk(BIOS_DEBUG, " done.\n");
 }
 
+/**
+ * Disable the iGPU at the host-bridge level so MRC never sees it.
+ */
+static void haswell_disable_igd_early(void)
+{
+	u32 deven;
+
+	/* Clear D2EN in the unified DEV ENable register */
+	deven = pci_read_config32(HOST_BRIDGE, DEVEN);
+	deven &= ~DEVEN_D2EN;
+	pci_write_config32(HOST_BRIDGE, DEVEN, deven);
+	printk(BIOS_DEBUG, "E: IGD forced off (DEVEN.D2EN cleared)\n");
+}
+
+
 static void haswell_setup_igd(void)
 {
 	bool igd_enabled;
@@ -184,6 +199,9 @@ void haswell_early_initialization(void)
 {
 	/* Setup all BARs required for early PCIe and raminit */
 	haswell_setup_bars();
+
+	/* Disable the iGPU before MRC runs */
+	haswell_disable_igd_early();
 
 	/* Setup IOMMU BARs */
 	haswell_setup_iommu();

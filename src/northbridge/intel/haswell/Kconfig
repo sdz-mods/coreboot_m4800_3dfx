@@ -4,8 +4,6 @@ config NORTHBRIDGE_INTEL_HASWELL
 	bool
 	select CPU_INTEL_HASWELL
 	select CACHE_MRC_SETTINGS
-	select INTEL_DDI
-	select INTEL_GMA_ACPI
 	select USE_DDR3
 
 if NORTHBRIDGE_INTEL_HASWELL
@@ -125,9 +123,6 @@ config RO_REGION_ONLY
 	string
 	depends on VBOOT
 	default "mrc.bin"
-
-config INTEL_GMA_BCLV_OFFSET
-	default 0x48254
 
 config ENABLE_DDR_2X_REFRESH
 	bool "Enable DRAM Refresh 2x support"
