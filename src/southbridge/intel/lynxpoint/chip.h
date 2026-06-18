@@ -46,6 +46,13 @@ struct southbridge_intel_lynxpoint_config {
 	uint32_t sata_port1_gen3_dtle;
 
 	/*
+	 * 0 = AHCI
+	 * 1 = IDE native
+	 * 2 = IDE legacy
+	 */
+	uint8_t sata_mode;
+
+	/*
 	 * SATA DEVSLP Mux
 	 * 0 = port 0 DEVSLP on DEVSLP0/GPIO33
 	 * 1 = port 3 DEVSLP on DEVSLP0/GPIO33

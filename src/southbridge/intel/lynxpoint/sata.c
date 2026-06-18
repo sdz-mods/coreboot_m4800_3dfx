@@ -17,6 +17,14 @@
 #define SATA_PORT_MASK	0x3f
 #endif
 
+#define SATA_MODE_AHCI		0
+#define SATA_MODE_IDE_NATIVE	1
+#define SATA_MODE_IDE_LEGACY	2
+
+#define SATA_MAP_AHCI		0x0060
+#define SATA_MAP_IDE		0x0000
+#define SATA_PROGIF_NATIVE	0x05
+
 static inline u32 sir_read(struct device *dev, int idx)
 {
 	pci_write_config32(dev, SATA_SIRI, idx);
@@ -53,12 +61,26 @@ static void sata_init(struct device *dev)
 		return;
 	}
 
+	const bool ahci_mode = config->sata_mode == SATA_MODE_AHCI;
+
 	/* SATA configuration */
 
-	/* Enable memory space decoding for ABAR */
-	pci_or_config16(dev, PCI_COMMAND, PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+	if (ahci_mode) {
+		/* Enable memory space decoding for ABAR */
+		pci_or_config16(dev, PCI_COMMAND, PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
 
-	printk(BIOS_DEBUG, "SATA: Controller in AHCI mode.\n");
+		printk(BIOS_DEBUG, "SATA: Controller in AHCI mode.\n");
+	} else {
+		pci_write_config16(dev, PCI_COMMAND, PCI_COMMAND_MASTER | PCI_COMMAND_IO);
+
+		if (config->sata_mode == SATA_MODE_IDE_NATIVE) {
+			pci_or_config8(dev, PCI_CLASS_PROG, SATA_PROGIF_NATIVE);
+			printk(BIOS_DEBUG, "SATA: Controller in IDE native mode.\n");
+		} else {
+			pci_and_config8(dev, PCI_CLASS_PROG, ~SATA_PROGIF_NATIVE);
+			printk(BIOS_DEBUG, "SATA: Controller in IDE legacy mode.\n");
+		}
+	}
 
 	/* Set Interrupt Line */
 	/* Interrupt Pin is set by D31IP.PIP */
@@ -98,6 +120,9 @@ static void sata_init(struct device *dev)
 	reg32 |= (config->sata_devslp_mux & 1) << 15;
 	pci_write_config32(dev, 0x94, reg32);
 
+	if (!ahci_mode)
+		goto skip_ahci;
+
 	/* Initialize AHCI memory-mapped space */
 	abar = (u32 *)pci_read_config32(dev, PCI_BASE_ADDRESS_5);
 	printk(BIOS_DEBUG, "ABAR: %p\n", abar);
@@ -124,6 +149,8 @@ static void sata_init(struct device *dev)
 		reg32 &= ~0x00000002;
 	}
 	write32(abar + 0x09, reg32);
+
+skip_ahci:
 
 	/* Set Gen3 Transmitter settings if needed */
 	if (config->sata_port0_gen3_tx)
@@ -196,6 +223,8 @@ static void sata_init(struct device *dev)
 
 static void sata_enable(struct device *dev)
 {
+	u16 sata_mode;
+
 	/* Get the chip configuration */
 	struct southbridge_intel_lynxpoint_config *config = dev->chip_info;
 
@@ -204,9 +233,14 @@ static void sata_enable(struct device *dev)
 
 	/*
 	 * Set SATA controller mode early so the resource allocator can
-	 * properly assign IO/Memory resources for the controller.
+	 * properly assign resources for the controller.
 	 */
-	pci_write_config16(dev, 0x90, 0x0060 | (config->sata_port_map ^ SATA_PORT_MASK) << 8);
+	if (config->sata_mode == SATA_MODE_AHCI)
+		sata_mode = SATA_MAP_AHCI;
+	else
+		sata_mode = SATA_MAP_IDE;
+
+	pci_write_config16(dev, 0x90, sata_mode | (config->sata_port_map ^ SATA_PORT_MASK) << 8);
 }
 
 static struct device_operations sata_ops = {
