@@ -1,0 +1,65 @@
+chip northbridge/intel/haswell
+	register "spd_addresses" = "{0x50, 0x51, 0x52, 0x53}"
+	register "ec_present" = "true"
+	#register "mmio_high_size" = "0"
+	register "usb_xhci_on_resume" = "false"
+	chip cpu/intel/haswell
+		device cpu_cluster 0 on ops haswell_cpu_bus_ops
+		end
+	end
+	device domain 0 on
+		ops haswell_pci_domain_ops
+		subsystemid 0x1028 0x05cc inherit
+		device pci 00.0 on end # Mobile Host bridge
+		device pci 01.0 on end # PCIe Bridge for discrete graphics
+		device pci 02.0 off end # Internal graphics VGA controller
+		device pci 03.0 off end # Mini-HD audio
+		chip southbridge/intel/lynxpoint # Intel Series 8 Lynx Point PCH
+			register "docking_supported" = "1"
+			register "gen1_dec" = "0x007c0681"
+			register "gen2_dec" = "0x005c0921"
+			register "gen3_dec" = "0x003c07e1"
+			register "gen4_dec" = "0x007c0901"
+			register "gpe0_en_1" = "0x1090042"
+			register "gpe0_en_2" = "0x0"
+			register "gpi0_routing" = "2"
+			register "sata_port0_gen3_dtle" = "0x7"
+			register "sata_port1_gen3_dtle" = "0x5"
+			register "sata_port0_gen3_tx" = "0x16"
+			register "sata_port1_gen3_tx" = "0x16"
+			register "sata_mode" = "0x1" #0 AHCI, 1 IDE native, 2 IDE legacy
+			# [0] HDD1, [1] ODD, [2] Dock, [3] ESATA, [4] mSATA
+			register "sata_port_map" = "0x13" #IDE CB 3 ports 0, 1, 4 = HDD1, ODD, mSATA
+			register "sata_devslp_disable" = "1"
+			device pci 14.0 on end # xHCI Controller
+			device pci 16.0 off end # Management Engine Interface 1
+			device pci 16.1 off end # Management Engine Interface 2
+			device pci 16.2 off end # Management Engine IDE-R
+			device pci 16.3 off end # Management Engine KT
+			device pci 19.0 on end # Intel Gigabit Ethernet
+			device pci 1a.0 on end # USB2 EHCI #2
+			device pci 1b.0 on end # High Definition Audio
+			device pci 1c.0 on end
+			device pci 1c.1 on end
+			device pci 1c.2 on end
+			device pci 1c.3 on end
+			device pci 1c.4 on end
+			device pci 1c.5 on end
+			device pci 1c.6 on end
+			device pci 1c.7 on end
+			device pci 1d.0 on end # USB2 EHCI #1
+			device pci 1f.0 on # LPC bridge
+				chip drivers/pc80/tpm
+					device pnp 0c31.0 on end
+				end
+				chip ec/dell/mec5035
+					device pnp ff.0 on end
+				end
+			end
+			device pci 1f.2 on end # SATA Controller
+			device pci 1f.3 on end # SMBus
+			device pci 1f.5 off end # SATA Controller (Legacy)
+			device pci 1f.6 off end # Thermal
+		end
+	end
+end
