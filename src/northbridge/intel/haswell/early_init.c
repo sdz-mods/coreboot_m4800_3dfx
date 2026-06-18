@@ -1,12 +1,20 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
 #include <stdint.h>
+#include <commonlib/bsd/compiler.h>
 #include <console/console.h>
 #include <device/mmio.h>
 #include <device/pci_def.h>
 #include <device/pci_ops.h>
 
 #include "haswell.h"
+
+/* RCBA helpers */
+#define SRCBA32(reg)        *(volatile u32 *)(CONFIG_FIXED_RCBA_MMIO_BASE + (reg))
+
+/* 0x3418 – Function-Disable register */
+#define SRCBA_FD            0x3418
+#define SRCBA_FD_HDA_DIS    (1 << 4)
 
 static bool peg_hidden[3];
 
@@ -50,6 +58,17 @@ static void haswell_disable_igd_early(void)
 	printk(BIOS_DEBUG, "E: IGD forced off (DEVEN.D2EN cleared)\n");
 }
 
+
+static void __maybe_unused haswell_disable_hda_early(void)
+{
+	/* Assert the Azalia-disable bit.  Read-modify-write is mandatory. */
+	u32 fd = SRCBA32(SRCBA_FD);
+	fd |= SRCBA_FD_HDA_DIS;
+	SRCBA32(SRCBA_FD) = fd;
+
+	printk(BIOS_DEBUG,
+	       "E: PCH HD-Audio forced off (RCBA.FD.HDAD set)\n");
+}
 
 static void haswell_setup_igd(void)
 {
@@ -202,6 +221,9 @@ void haswell_early_initialization(void)
 
 	/* Disable the iGPU before MRC runs */
 	haswell_disable_igd_early();
+
+	/* Keep this available for builds that need PCH HDA disabled. */
+	/* haswell_disable_hda_early(); */
 
 	/* Setup IOMMU BARs */
 	haswell_setup_iommu();
