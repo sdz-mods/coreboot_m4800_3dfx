@@ -52,6 +52,15 @@ config SEABIOS_PS2_TIMEOUT
 	  after powering on. This specifies how long SeaBIOS will wait for the
 	  keyboard controller to become ready before giving up.
 
+config SEABIOS_BOOTMENU_WAIT
+	prompt "Boot menu wait timeout (milliseconds)"
+	default 5000 if BOARD_DELL_PRECISION_M4800_3DFX
+	default 0
+	int
+	help
+	  How long SeaBIOS waits for the boot menu key before booting. This
+	  writes the timeout to CBFS as etc/boot-menu-wait.
+
 config SEABIOS_THREAD_OPTIONROMS
 	prompt "Hardware init during option ROM execution"
 	default n

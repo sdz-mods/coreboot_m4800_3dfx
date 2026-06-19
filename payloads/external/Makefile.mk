@@ -114,6 +114,15 @@ $(call add_intermediate, seabios_ps2_timeout, $(CBFSTOOL))
 endif
 endif
 
+ifneq ($(CONFIG_SEABIOS_BOOTMENU_WAIT),)
+ifneq ($(CONFIG_SEABIOS_BOOTMENU_WAIT),0)
+$(call add_intermediate, seabios_bootmenu_wait, $(CBFSTOOL))
+	@printf "    SeaBIOS    Wait $(CONFIG_SEABIOS_BOOTMENU_WAIT) ms for boot menu key\n"
+	$(if $(CONFIG_UPDATE_IMAGE),-$(CBFSTOOL) $< remove -n etc/boot-menu-wait 2>/dev/null)
+	$(CBFSTOOL) $< add-int -i $(CONFIG_SEABIOS_BOOTMENU_WAIT) -n etc/boot-menu-wait
+endif
+endif
+
 ifeq ($(CONFIG_SEABIOS_ADD_SERCON_PORT_FILE),y)
 $(call add_intermediate, seabios_sercon, $(CBFSTOOL))
 	@printf "    SeaBIOS    Add sercon-port file\n"
