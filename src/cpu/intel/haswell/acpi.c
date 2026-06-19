@@ -327,8 +327,15 @@ static void generate_P_state_entries(int core, int cores_per_package)
 
 static void generate_cpu_entry(const struct device *device, int cpu, int core, int cores_per_package)
 {
-	/* Generate Scope(\_SB) { Device(CPUx */
-	acpigen_write_processor_device(cpu * cores_per_package + core);
+	/*
+	 * Emit the legacy Processor() operator instead of a Device(ACPI0007).
+	 * Windows XP's processor driver (processr.sys/intelppm.sys) only binds
+	 * to Processor() objects; it ignores ACPI0007 devices, so with the
+	 * modern declaration XP never reads _PSS and SpeedStep does not work.
+	 * The PBLK is left at 0 - C-states are described via _CST, not P_BLK.
+	 * Processor() is deprecated as of ACPI 6.0.
+	 */
+	acpigen_write_processor(cpu * cores_per_package + core, 0, 0);
 
 	/* Generate P-state tables */
 	generate_P_state_entries(core, cores_per_package);
@@ -339,7 +346,7 @@ static void generate_cpu_entry(const struct device *device, int cpu, int core, i
 	/* Generate T-state tables */
 	generate_T_state_entries(cpu, cores_per_package);
 
-	acpigen_write_processor_device_end();
+	acpigen_pop_len();
 }
 
 void generate_cpu_entries(const struct device *device)
