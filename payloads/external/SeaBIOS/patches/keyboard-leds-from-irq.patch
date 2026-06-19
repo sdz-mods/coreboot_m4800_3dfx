@@ -1,0 +1,101 @@
+diff --git a/src/kbd.c b/src/kbd.c
+index 15e5ae78..595b9359 100644
+--- a/src/kbd.c
++++ b/src/kbd.c
+@@ -11,7 +11,8 @@
+ #include "output.h" // debug_enter
+ #include "stacks.h" // yield
+ #include "string.h" // memset
+-#include "util.h" // kbd_init
++#include "util.h" // kbd_init, udelay
++#include "x86.h" // inb, outb
+ 
+ void
+ kbd_init(void)
+@@ -224,6 +225,39 @@ handle_16XX(struct bregs *regs)
+     warn_unimplemented(regs);
+ }
+ 
++static int
++kbd_wait_for_write(void)
++{
++    int i;
++
++    for (i = 0; i < 10000; i++) {
++        if (!(inb(PORT_PS2_STATUS) & I8042_STR_IBF))
++            return 0;
++        udelay(50);
++    }
++
++    return -1;
++}
++
++static int
++kbd_write_leds(u8 led_flags)
++{
++    /*
++     * Some EC-backed keyboards accept the LED command bytes but do not
++     * reliably complete SeaBIOS' ACK-driven ps2_kbd_command() sequence.
++     * Write the same byte stream that works from DOS debug:
++     *   out 0x60, 0xed; out 0x60, led_flags
++     */
++    if (kbd_wait_for_write())
++        return -1;
++    outb((u8)ATKBD_CMD_SETLEDS, PORT_PS2_DATA);
++    if (kbd_wait_for_write())
++        return -1;
++    outb(led_flags, PORT_PS2_DATA);
++
++    return 0;
++}
++
+ static void noinline
+ set_leds(void)
+ {
+@@ -233,14 +267,21 @@ set_leds(void)
+     if (shift_flags == led_flags)
+         return;
+ 
+-    int ret = kbd_command(ATKBD_CMD_SETLEDS, &shift_flags);
++    int ret = kbd_write_leds(shift_flags);
+     if (ret)
+         // Error
+         return;
+     kbd_led = (kbd_led & ~0x07) | shift_flags;
+     SET_BDA(kbd_led, kbd_led);
+ }
+ 
++static void
++set_leds_on_press(int key_release)
++{
++    if (!key_release)
++        set_leds();
++}
++
+ // INT 16h Keyboard Service Entry Point
+ void VISIBLE16
+ handle_16(struct bregs *regs)
+@@ -477,6 +518,7 @@ __process_key(u8 scancode)
+     switch (scancode) {
+     case 0x3a: /* Caps Lock */
+         kbd_set_flag(key_release, KF0_CAPS, 0, KF0_CAPSACTIVE);
++        set_leds_on_press(key_release);
+         return;
+     case 0x2a: /* L Shift */
+         if (flags1 & KF1_LAST_E0)
+@@ -507,6 +548,7 @@ __process_key(u8 scancode)
+             // XXX - pause key.
+             return;
+         kbd_set_flag(key_release, KF0_NUM, 0, KF0_NUMACTIVE);
++        set_leds_on_press(key_release);
+         return;
+     case 0x46: /* Scroll Lock */
+         if (flags1 & KF1_LAST_E0) {
+@@ -514,6 +556,7 @@ __process_key(u8 scancode)
+             return;
+         }
+         kbd_set_flag(key_release, KF0_SCROLL, 0, KF0_SCROLLACTIVE);
++        set_leds_on_press(key_release);
+         return;
+ 
+     case 0x37: /* * */
