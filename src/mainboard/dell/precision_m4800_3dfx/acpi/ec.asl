@@ -1,4 +1,3 @@
-#include "acpi/ec_vga_mux.asl"
 #include "acpi/power.asl"
 #include "acpi/osi.asl"
 
@@ -7,7 +6,6 @@
 
             Method (_INI, 0, NotSerialized)  // _INI: Initialize
             {
-                VDP1 (Zero, One)
             }
 
             Name (_HID, EisaId ("PNP0C09") /* Embedded Controller Device */)  // _HID: Hardware ID
@@ -543,7 +541,4 @@
             Return (Local0)
         }
         }
-
-
-
 

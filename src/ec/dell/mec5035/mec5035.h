@@ -12,6 +12,7 @@ enum mec5035_cmd {
 	CMD_RADIO_CTRL = 0x2b,
 	CMD_POWER_BUTTON_TO_HOST = 0x3e,
 	CMD_MUTE_CTRL = 0x60,
+	CMD_GPIO_CTRL = 0xb3,
 	CMD_CPU_OK = 0xc2,
 };
 

@@ -108,6 +108,34 @@ static void mec5035_mute_ctrl(enum ec_mute mute)
 	ec_command(CMD_MUTE_CTRL);
 }
 
+static void mec5035_gpio_set(u8 gpio, u8 value)
+{
+	u8 buf[] = {gpio, value & 1};
+	write_mailbox_regs(buf, 2, ARRAY_SIZE(buf));
+	ec_command(CMD_GPIO_CTRL);
+}
+
+/*
+ * The analog VGA connector is fed through a 2:1 mux controlled by three EC
+ * GPIOs (reached via CMD_GPIO_CTRL). They select the source GPU and the
+ * destination connector:
+ *
+ *   gpio 1  CRT_SWITCH    0 = motherboard (laptop) VGA, 1 = docking VGA
+ *   gpio 10 DGPU_SELECT#  0 = discrete GPU,             1 = integrated GPU
+ *   gpio 11 EDID_SELECT#  0 = discrete GPU,             1 = integrated GPU
+ *
+ * Driving all three to 0 routes the discrete GPU to the laptop's own VGA
+ * port. The EC numbers these GPIOs from its own table (like the radio
+ * devices), so the indices were determined empirically, not from the pin
+ * names on the schematic.
+ */
+static void mec5035_set_vga_mux_discrete(void)
+{
+	mec5035_gpio_set(1, 0);		/* CRT_SWITCH   -> laptop VGA */
+	mec5035_gpio_set(10, 0);	/* DGPU_SELECT# -> discrete   */
+	mec5035_gpio_set(11, 0);	/* EDID_SELECT# -> discrete   */
+}
+
 void mec5035_early_init(void)
 {
 	/* If this isn't sent the EC shuts down the system after about 15
@@ -123,6 +151,9 @@ static void mec5035_init(struct device *dev)
 	mec5035_mouse_touchpad(TP_PS2_MOUSE);
 	mec5035_power_button_route(HOST);
 	mec5035_mute_ctrl(UNMUTE);
+
+	/* Route the laptop VGA port to the discrete GPU (3dfx MXM). */
+	mec5035_set_vga_mux_discrete();
 
 	pc_keyboard_init(NO_AUX_DEVICE);
 
