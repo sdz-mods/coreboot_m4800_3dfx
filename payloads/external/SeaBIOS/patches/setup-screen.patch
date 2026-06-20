@@ -1,0 +1,1738 @@
+diff --git a/src/boot.c b/src/boot.c
+index 1effd802..a1eecf1a 100644
+--- a/src/boot.c
++++ b/src/boot.c
+@@ -8,9 +8,12 @@
+ #include "block.h" // struct drive_s
+ #include "bregs.h" // struct bregs
+ #include "config.h" // CONFIG_*
++#include "e820map.h" // e820_list
+ #include "fw/paravirt.h" // qemu_cfg_show_boot_menu
+ #include "hw/pci.h" // pci_bdf_to_*
++#include "hw/pci_regs.h" // PCI_COMMAND
+ #include "hw/pcidevice.h" // struct pci_device
++#include "hw/ps2port.h" // i8042_reboot
+ #include "hw/rtc.h" // rtc_read
+ #include "hw/usb.h" // struct usbdevice_s
+ #include "list.h" // hlist_node
+@@ -21,6 +24,7 @@
+ #include "string.h" // memset
+ #include "util.h" // irqtimer_calc
+ #include "tcgbios.h" // tpm_*
++#include "x86.h" // inb, outb
+ 
+ /****************************************************************
+  * Helper search functions
+@@ -456,11 +460,53 @@ static int BootRetryTime;
+ static int CheckFloppySig = 1;
+ 
+ #define DEFAULT_PRIO           9999
++#define SETUP_CMOS_BOOT_ORDER	52
+ 
+ static int DefaultFloppyPrio = 101;
+ static int DefaultCDPrio     = 102;
+ static int DefaultHDPrio     = 103;
+-static int DefaultBEVPrio    = 104;
++static int DefaultUSBPrio    = 104;
++static int DefaultCBFSPrio   = 105;
++static int DefaultBEVPrio    = 106;
++
++static u8
++setup_cmos_read(u8 index);
++
++static void
++boot_setup_default_order(void)
++{
++    u8 order = (setup_cmos_read(SETUP_CMOS_BOOT_ORDER) >> 5) & 0x03;
++
++    DefaultFloppyPrio = DEFAULT_PRIO;
++    DefaultBEVPrio = DEFAULT_PRIO;
++
++    switch (order) {
++    case 1:
++        DefaultCDPrio = 101;
++        DefaultHDPrio = 102;
++        DefaultUSBPrio = 103;
++        DefaultCBFSPrio = 104;
++        break;
++    case 2:
++        DefaultUSBPrio = 101;
++        DefaultHDPrio = 102;
++        DefaultCDPrio = 103;
++        DefaultCBFSPrio = 104;
++        break;
++    case 3:
++        DefaultCBFSPrio = 101;
++        DefaultHDPrio = 102;
++        DefaultCDPrio = 103;
++        DefaultUSBPrio = 104;
++        break;
++    default:
++        DefaultHDPrio = 101;
++        DefaultCDPrio = 102;
++        DefaultUSBPrio = 103;
++        DefaultCBFSPrio = 104;
++        break;
++    }
++}
+ 
+ void
+ boot_init(void)
+@@ -487,6 +533,8 @@ boot_init(void)
+             case 4: DefaultBEVPrio = i;    break;
+             }
+         }
++    } else {
++        boot_setup_default_order();
+     }
+ 
+     BootRetryTime = romfile_loadint("etc/boot-fail-wait", 60*1000);
+@@ -593,7 +641,13 @@ boot_add_floppy(struct drive_s *drive, const char *desc, int prio)
+ void
+ boot_add_hd(struct drive_s *drive, const char *desc, int prio)
+ {
+-    bootentry_add(IPL_TYPE_HARDDISK, defPrio(prio, DefaultHDPrio)
++    int defaultprio = DefaultHDPrio;
++
++    if (drive->type == DTYPE_USB || drive->type == DTYPE_USB_32
++        || drive->type == DTYPE_UAS || drive->type == DTYPE_UAS_32)
++        defaultprio = DefaultUSBPrio;
++
++    bootentry_add(IPL_TYPE_HARDDISK, defPrio(prio, defaultprio)
+                   , (u32)drive, desc);
+ }
+ 
+@@ -618,7 +672,7 @@ boot_add_cd(struct drive_s *drive, const char *desc, int prio)
+ void
+ boot_add_cbfs(void *data, const char *desc, int prio)
+ {
+-    bootentry_add(IPL_TYPE_CBFS, defPrio(prio, DEFAULT_PRIO), (u32)data, desc);
++    bootentry_add(IPL_TYPE_CBFS, defPrio(prio, DefaultCBFSPrio), (u32)data, desc);
+ }
+ 
+ 
+@@ -681,6 +735,121 @@ get_keystroke(int msec)
+  ****************************************************************/
+ 
+ #define DEFAULT_BOOTMENU_WAIT 2500
++#define SETUP_MENU_KEY 0x53
++#define SETUP_3DFX_RESET_KEY	'R'
++#define SETUP_3DFX_RESET_KEY_LOWER	'r'
++#define SETUP_CMOS_SATA_MODE	52
++#define SETUP_CMOS_HDA_DISABLE	52
++#define SETUP_CMOS_TURBO_DISABLE	52
++#define SETUP_CMOS_VGA_MUX	52
++#define SETUP_CMOS_BOOT_DELAY	53
++#define SETUP_CMOS_CSUM_START	49
++#define SETUP_CMOS_CSUM_END	55
++#define SETUP_CMOS_CSUM_HIGH	123
++#define SETUP_CMOS_CSUM_LOW	124
++#define SETUP_SATA_MODE_DEFAULT	1
++#define SETUP_HDA_DISABLE_DEFAULT	0
++#define SETUP_TURBO_DISABLE_DEFAULT	0
++#define SETUP_VGA_MUX_DEFAULT	0
++#define SETUP_BOOT_ORDER_DEFAULT	0
++#define SETUP_BOOT_DELAY_DEFAULT	2
++#define SETUP_BIOS_VERSION	"M4800-3DFX-0.1"
++
++#define SETUP_ATTR_NORMAL	0x1f
++#define SETUP_ATTR_SELECT	0x70
++#define SETUP_ATTR_TITLE	0x1e
++#define SETUP_ATTR_STATUS	0x17
++#define SETUP_ATTR_DISABLED	0x17
++
++#define SETUP_LABEL_COL		5
++#define SETUP_VALUE_COL		33
++
++#define SETUP_MENU_INFO		0
++#define SETUP_MENU_MAIN		1
++#define SETUP_MENU_ADVANCED	2
++#define SETUP_MENU_BOOT		3
++#define SETUP_MENU_3DFX		4
++#define SETUP_MENU_SAVE_EXIT	5
++#define SETUP_MENU_COUNT	6
++
++#define SETUP_FOCUS_MENU	0
++#define SETUP_FOCUS_PAGE	1
++
++#define SETUP_KEY_ESC		0x01
++#define SETUP_KEY_TAB		0x0f
++#define SETUP_KEY_MINUS		0x0c
++#define SETUP_KEY_PLUS		0x0d
++#define SETUP_KEY_ENTER		0x1c
++#define SETUP_KEY_LEFT		0x4b
++#define SETUP_KEY_RIGHT		0x4d
++#define SETUP_KEY_UP		0x48
++#define SETUP_KEY_DOWN		0x50
++#define SETUP_KEY_F9		0x43
++#define SETUP_KEY_F10		0x44
++
++#define MXM_XIO2001_VENDOR	0x104c
++#define MXM_XIO2001_DEVICE	0x8240
++#define MXM_SSVID_3DFX		0x4444
++#define MXM_GPIO_DIR		0xb4
++#define MXM_GPIO_DATA		0xb6
++#define MXM_GPIO_00		0x1c
++#define MXM_GPIO_01		0x1d
++#define MXM_GPIO_10		0x1e
++#define MXM_GPIO_11		0x1f
++
++#define TDFX_VENDOR_ID		0x121a
++#define TDFX_DEV_NAPALM		0x0009
++#define TDFX_DEV_NAPALM2	0x000b
++#define VSA_ROM_OFFSET		0x00a00000
++#define VSA_ROM_SIZE		0x00010000
++#define VSA_MISC_INIT0		0x10
++#define VSA_MISC_INIT1		0x14
++
++struct setup_3dfx_state {
++    int present;
++    int m4800;
++    u16 bdf;
++    u16 ssid;
++    const char *model;
++    const char *display;
++    const char *revision;
++    u8 brightness;
++    u8 vcore_code;
++    u8 fb64;
++    u8 gpu_temp;
++    u8 smc_temp;
++    u8 fan_speed;
++    u8 raw[5];
++    int selected;
++};
++
++struct setup_datetime_state {
++    u8 sec;
++    u8 min;
++    u8 hour;
++    u8 day;
++    u8 month;
++    u16 year;
++    int selected;
++};
++
++struct setup_advanced_state {
++    u8 sata_mode;
++    u8 hda_disable;
++    u8 turbo_disable;
++    u8 vga_mux;
++    int selected;
++};
++
++struct setup_boot_state {
++    u8 boot_order;
++    u8 boot_delay;
++    int selected;
++};
++
++struct setup_save_exit_state {
++    int selected;
++};
+ 
+ static const char menuchars[] = {
+     '1', '2', '3', '4', '5', '6', '7', '8', '9',
+@@ -690,6 +859,1453 @@ static const char menuchars[] = {
+     'u', 'v', 'w', 'x', 'y', 'z'
+ };
+ 
++static void
++setup_set_cursor(u8 row, u8 col)
++{
++    struct bregs br;
++    memset(&br, 0, sizeof(br));
++    br.flags = F_IF;
++    br.ah = 0x02;
++    br.bh = 0;
++    br.dh = row;
++    br.dl = col;
++    call16_int(0x10, &br);
++}
++
++static void
++setup_puts(u8 row, u8 col, const char *str)
++{
++    setup_set_cursor(row, col);
++    while (*str && col < 79) {
++        printf("%c", *str++);
++        col++;
++    }
++}
++
++static void
++setup_puts_attr(u8 row, u8 col, const char *str, u8 attr)
++{
++    struct bregs br;
++
++    setup_set_cursor(row, col);
++    while (*str && col < 79) {
++        memset(&br, 0, sizeof(br));
++        br.flags = F_IF;
++        br.ah = 0x09;
++        br.al = *str++;
++        br.bh = 0;
++        br.bl = attr;
++        br.cx = 1;
++        call16_int(0x10, &br);
++        col++;
++        setup_set_cursor(row, col);
++    }
++}
++
++static void
++setup_clear_line(u8 row)
++{
++    setup_puts_attr(row, 1,
++                    "                                                                              ",
++                    SETUP_ATTR_NORMAL);
++}
++
++static void
++setup_clear_message(void)
++{
++    setup_clear_line(24);
++}
++
++static void
++setup_message(const char *msg)
++{
++    setup_clear_message();
++    setup_puts_attr(24, 2, msg, SETUP_ATTR_STATUS);
++}
++
++static void
++setup_footer(const char *msg)
++{
++    setup_puts_attr(23, 1,
++                    "                                                                              ",
++                    SETUP_ATTR_STATUS);
++    setup_puts_attr(23, 2, msg, SETUP_ATTR_STATUS);
++}
++
++static void
++setup_draw_value_row(u8 row, const char *name, const char *value,
++                     u8 label_attr, u8 value_attr)
++{
++    int len;
++    int i;
++
++    for (len = strlen(value); len > 0 && value[len - 1] == ' '; len--)
++        ;
++    if (len > 43)
++        len = 43;
++
++    setup_clear_line(row);
++    setup_puts(row, 1, "|");
++    setup_puts(row, 78, "|");
++    setup_puts_attr(row, SETUP_LABEL_COL, name, label_attr);
++    setup_puts_attr(row, SETUP_VALUE_COL, "[", value_attr);
++    for (i = 0; i < len; i++) {
++        char ch[2] = { value[i], '\0' };
++        setup_puts_attr(row, SETUP_VALUE_COL + 1 + i, ch, value_attr);
++    }
++    setup_puts_attr(row, SETUP_VALUE_COL + 1 + len, "]", value_attr);
++}
++
++static u8
++setup_bcd_to_bin(u8 val)
++{
++    return (val & 0x0f) + ((val >> 4) * 10);
++}
++
++static void
++setup_read_datetime(struct setup_datetime_state *dt)
++{
++    u8 status_b;
++    u8 year;
++    u8 century;
++
++    rtc_updating();
++    status_b = rtc_read(CMOS_STATUS_B);
++    dt->sec = rtc_read(CMOS_RTC_SECONDS);
++    dt->min = rtc_read(CMOS_RTC_MINUTES);
++    dt->hour = rtc_read(CMOS_RTC_HOURS);
++    dt->day = rtc_read(CMOS_RTC_DAY_MONTH);
++    dt->month = rtc_read(CMOS_RTC_MONTH);
++    year = rtc_read(CMOS_RTC_YEAR);
++    century = rtc_read(CMOS_CENTURY);
++
++    if (!(status_b & RTC_B_BIN)) {
++        dt->sec = setup_bcd_to_bin(dt->sec);
++        dt->min = setup_bcd_to_bin(dt->min);
++        dt->hour = setup_bcd_to_bin(dt->hour);
++        dt->day = setup_bcd_to_bin(dt->day);
++        dt->month = setup_bcd_to_bin(dt->month);
++        year = setup_bcd_to_bin(year);
++        century = setup_bcd_to_bin(century);
++    }
++
++    dt->year = (century * 100) + year;
++}
++
++static u8
++setup_bin_to_bcd(u8 val)
++{
++    return ((val / 10) << 4) | (val % 10);
++}
++
++static void
++setup_write_datetime(const struct setup_datetime_state *dt)
++{
++    u8 status_b = rtc_read(CMOS_STATUS_B);
++    u8 sec = dt->sec;
++    u8 min = dt->min;
++    u8 hour = dt->hour;
++    u8 day = dt->day;
++    u8 month = dt->month;
++    u8 year = dt->year % 100;
++    u8 century = dt->year / 100;
++
++    if (!(status_b & RTC_B_BIN)) {
++        sec = setup_bin_to_bcd(sec);
++        min = setup_bin_to_bcd(min);
++        hour = setup_bin_to_bcd(hour);
++        day = setup_bin_to_bcd(day);
++        month = setup_bin_to_bcd(month);
++        year = setup_bin_to_bcd(year);
++        century = setup_bin_to_bcd(century);
++    }
++
++    rtc_mask(CMOS_STATUS_B, 0, RTC_B_SET);
++    rtc_write(CMOS_RTC_SECONDS, sec);
++    rtc_write(CMOS_RTC_MINUTES, min);
++    rtc_write(CMOS_RTC_HOURS, hour);
++    rtc_write(CMOS_RTC_DAY_MONTH, day);
++    rtc_write(CMOS_RTC_MONTH, month);
++    rtc_write(CMOS_RTC_YEAR, year);
++    rtc_write(CMOS_CENTURY, century);
++    rtc_mask(CMOS_STATUS_B, RTC_B_SET, 0);
++}
++
++static u8
++setup_cmos_read(u8 index)
++{
++    outb(index | 0x80, 0x70);
++    return inb(0x71);
++}
++
++static void
++setup_cmos_write(u8 index, u8 value)
++{
++    outb(index | 0x80, 0x70);
++    outb(value, 0x71);
++}
++
++static void
++setup_cmos_update_checksum(void)
++{
++    u16 sum = 0;
++    u8 i;
++
++    for (i = SETUP_CMOS_CSUM_START; i <= SETUP_CMOS_CSUM_END; i++)
++        sum += setup_cmos_read(i);
++
++    setup_cmos_write(SETUP_CMOS_CSUM_HIGH, sum >> 8);
++    setup_cmos_write(SETUP_CMOS_CSUM_LOW, sum & 0xff);
++}
++
++static u8
++setup_read_sata_mode(void)
++{
++    u8 mode = setup_cmos_read(SETUP_CMOS_SATA_MODE) & 0x03;
++
++    if (mode > 2)
++        mode = 2;
++
++    return mode;
++}
++
++static u8
++setup_read_hda_disable(void)
++{
++    return (setup_cmos_read(SETUP_CMOS_HDA_DISABLE) >> 2) & 0x01;
++}
++
++static u8
++setup_read_turbo_disable(void)
++{
++    return (setup_cmos_read(SETUP_CMOS_TURBO_DISABLE) >> 3) & 0x01;
++}
++
++static u8
++setup_read_vga_mux(void)
++{
++    return (setup_cmos_read(SETUP_CMOS_VGA_MUX) >> 4) & 0x01;
++}
++
++static u8
++setup_read_boot_order(void)
++{
++    return (setup_cmos_read(SETUP_CMOS_BOOT_ORDER) >> 5) & 0x03;
++}
++
++static u8
++setup_read_boot_delay(void)
++{
++    return (setup_cmos_read(SETUP_CMOS_BOOT_DELAY) >> 3) & 0x03;
++}
++
++static void
++setup_write_sata_mode(u8 mode)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_SATA_MODE);
++
++    value = (value & ~0x03) | (mode & 0x03);
++    setup_cmos_write(SETUP_CMOS_SATA_MODE, value);
++}
++
++static void
++setup_write_hda_disable(u8 disable)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_HDA_DISABLE);
++
++    value = (value & ~0x04) | ((disable & 0x01) << 2);
++    setup_cmos_write(SETUP_CMOS_HDA_DISABLE, value);
++}
++
++static void
++setup_write_turbo_disable(u8 disable)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_TURBO_DISABLE);
++
++    value = (value & ~0x08) | ((disable & 0x01) << 3);
++    setup_cmos_write(SETUP_CMOS_TURBO_DISABLE, value);
++}
++
++static void
++setup_write_vga_mux(u8 target)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_VGA_MUX);
++
++    value = (value & ~0x10) | ((target & 0x01) << 4);
++    setup_cmos_write(SETUP_CMOS_VGA_MUX, value);
++}
++
++static void
++setup_write_boot_order(u8 order)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_BOOT_ORDER);
++
++    value = (value & ~0x60) | ((order & 0x03) << 5);
++    setup_cmos_write(SETUP_CMOS_BOOT_ORDER, value);
++}
++
++static void
++setup_write_boot_delay(u8 delay)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_BOOT_DELAY);
++
++    value = (value & ~0x18) | ((delay & 0x03) << 3);
++    setup_cmos_write(SETUP_CMOS_BOOT_DELAY, value);
++}
++
++static void
++setup_write_advanced(const struct setup_advanced_state *adv)
++{
++    setup_write_sata_mode(adv->sata_mode);
++    setup_write_hda_disable(adv->hda_disable);
++    setup_write_turbo_disable(adv->turbo_disable);
++    setup_write_vga_mux(adv->vga_mux);
++    setup_cmos_update_checksum();
++}
++
++static void
++setup_write_boot(const struct setup_boot_state *boot)
++{
++    setup_write_boot_order(boot->boot_order);
++    setup_write_boot_delay(boot->boot_delay);
++    setup_cmos_update_checksum();
++}
++
++static void
++setup_defaults(struct setup_advanced_state *adv, struct setup_boot_state *boot)
++{
++    adv->sata_mode = SETUP_SATA_MODE_DEFAULT;
++    adv->hda_disable = SETUP_HDA_DISABLE_DEFAULT;
++    adv->turbo_disable = SETUP_TURBO_DISABLE_DEFAULT;
++    adv->vga_mux = SETUP_VGA_MUX_DEFAULT;
++    boot->boot_order = SETUP_BOOT_ORDER_DEFAULT;
++    boot->boot_delay = SETUP_BOOT_DELAY_DEFAULT;
++}
++
++static void
++setup_write_all(const struct setup_advanced_state *adv,
++                const struct setup_boot_state *boot,
++                const struct setup_datetime_state *dt)
++{
++    setup_write_advanced(adv);
++    setup_write_boot(boot);
++    setup_write_datetime(dt);
++}
++
++static const char *
++setup_sata_mode_name(u8 mode)
++{
++    switch (mode) {
++    case 0:
++        return "AHCI";
++    case 1:
++        return "IDE native";
++    default:
++        return "IDE legacy";
++    }
++}
++
++static const char *
++setup_hda_name(u8 disable)
++{
++    return disable ? "Disabled" : "Enabled";
++}
++
++static const char *
++setup_turbo_name(u8 disable)
++{
++    return disable ? "Disabled" : "Enabled";
++}
++
++static const char *
++setup_vga_mux_name(u8 target)
++{
++    return target ? "Dock" : "VGA connector";
++}
++
++static const char *
++setup_boot_order_name(u8 order)
++{
++    switch (order) {
++    case 1:
++        return "CD/DVD, HDD, USB, Payload";
++    case 2:
++        return "USB, HDD, CD/DVD, Payload";
++    case 3:
++        return "Payload, HDD, CD/DVD, USB";
++    default:
++        return "HDD, CD/DVD, USB, Payload";
++    }
++}
++
++static const char *
++setup_boot_delay_name(u8 delay)
++{
++    switch (delay) {
++    case 0:
++        return "1 sec";
++    case 1:
++        return "3 sec";
++    case 3:
++        return "10 sec";
++    default:
++        return "5 sec";
++    }
++}
++
++static u32
++setup_boot_delay_ms(void)
++{
++    switch (setup_read_boot_delay()) {
++    case 0:
++        return 1000;
++    case 1:
++        return 3000;
++    case 3:
++        return 10000;
++    default:
++        return 5000;
++    }
++}
++
++static int
++setup_3dfx_find_bridge(u16 *bdf_out)
++{
++    int bus;
++
++    for (bus = 0; bus < 256; bus++) {
++        int bdf;
++        foreachbdf(bdf, bus) {
++            if (pci_config_readw(bdf, 0x00) == MXM_XIO2001_VENDOR
++                && pci_config_readw(bdf, 0x02) == MXM_XIO2001_DEVICE) {
++                *bdf_out = bdf;
++                return 0;
++            }
++        }
++    }
++
++    return -1;
++}
++
++static void
++setup_3dfx_decode_card(struct setup_3dfx_state *mxm)
++{
++    mxm->present = 0;
++    mxm->m4800 = 0;
++    mxm->model = "No supported card detected";
++    mxm->display = "Unknown";
++    mxm->revision = "Unknown";
++
++    switch (mxm->ssid) {
++    case 0x0100:
++        mxm->present = 1;
++        mxm->m4800 = 1;
++        mxm->model = "M4800";
++        mxm->display = "LVDS";
++        mxm->revision = "A00";
++        break;
++    case 0x0101:
++        mxm->present = 1;
++        mxm->m4800 = 1;
++        mxm->model = "M4800";
++        mxm->display = "LVDS";
++        mxm->revision = "A01";
++        break;
++    case 0x0102:
++        mxm->present = 1;
++        mxm->m4800 = 1;
++        mxm->model = "M4800";
++        mxm->display = "LVDS";
++        mxm->revision = "A02";
++        break;
++    case 0x0200:
++        mxm->present = 1;
++        mxm->m4800 = 1;
++        mxm->model = "M4800";
++        mxm->display = "eDP";
++        mxm->revision = "A00";
++        break;
++    case 0x0201:
++        mxm->present = 1;
++        mxm->m4800 = 1;
++        mxm->model = "M4800";
++        mxm->display = "eDP";
++        mxm->revision = "A01";
++        break;
++    case 0x0202:
++        mxm->present = 1;
++        mxm->m4800 = 1;
++        mxm->model = "M4800";
++        mxm->display = "eDP";
++        mxm->revision = "A02";
++        break;
++    case 0x0300:
++        mxm->present = 1;
++        mxm->model = "M3800";
++        mxm->display = "LVDS";
++        mxm->revision = "A00";
++        break;
++    case 0x0301:
++        mxm->present = 1;
++        mxm->model = "M3800";
++        mxm->display = "LVDS";
++        mxm->revision = "A01";
++        break;
++    case 0x0302:
++        mxm->present = 1;
++        mxm->model = "M3800";
++        mxm->display = "LVDS";
++        mxm->revision = "A02";
++        break;
++    case 0x0400:
++        mxm->present = 1;
++        mxm->model = "M3800";
++        mxm->display = "eDP";
++        mxm->revision = "A00";
++        break;
++    case 0x0401:
++        mxm->present = 1;
++        mxm->model = "M3800";
++        mxm->display = "eDP";
++        mxm->revision = "A01";
++        break;
++    case 0x0402:
++        mxm->present = 1;
++        mxm->model = "M3800";
++        mxm->display = "eDP";
++        mxm->revision = "A02";
++        break;
++    }
++}
++
++static void
++setup_3dfx_defaults(struct setup_3dfx_state *mxm)
++{
++    mxm->brightness = 100;
++    mxm->vcore_code = 1;
++    mxm->fb64 = 0;
++}
++
++static void
++setup_3dfx_init(struct setup_3dfx_state *mxm)
++{
++    memset(mxm, 0, sizeof(*mxm));
++    mxm->model = "No supported card detected";
++    mxm->display = "Unknown";
++    mxm->revision = "Unknown";
++    setup_3dfx_defaults(mxm);
++
++    if (setup_3dfx_find_bridge(&mxm->bdf))
++        return;
++
++    pci_config_writeb(mxm->bdf, MXM_GPIO_DIR, 0x03);
++    if (pci_config_readw(mxm->bdf, 0x44) != MXM_SSVID_3DFX)
++        return;
++
++    mxm->ssid = pci_config_readw(mxm->bdf, 0x46);
++    setup_3dfx_decode_card(mxm);
++}
++
++static void
++setup_3dfx_read_settings(struct setup_3dfx_state *mxm)
++{
++    u8 packet[5];
++    int bit;
++
++    if (!mxm->present)
++        return;
++
++    memset(packet, 0, sizeof(packet));
++    pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, MXM_GPIO_10);
++    msleep(50);
++    pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, MXM_GPIO_11);
++    msleep(200);
++
++    for (bit = 0; bit < 40; bit++) {
++        u8 data;
++        pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, MXM_GPIO_10);
++        msleep(1);
++        pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, MXM_GPIO_11);
++        msleep(1);
++        data = (pci_config_readb(mxm->bdf, MXM_GPIO_DATA) & 0x04) >> 2;
++        packet[bit / 8] = (packet[bit / 8] << 1) | data;
++    }
++
++    memcpy(mxm->raw, packet, sizeof(mxm->raw));
++
++    mxm->brightness = packet[0];
++    if (mxm->brightness < 10)
++        mxm->brightness = 10;
++    if (mxm->brightness > 100)
++        mxm->brightness = 100;
++
++    mxm->vcore_code = packet[1] >> 4;
++    if (mxm->vcore_code > 6)
++        mxm->vcore_code = 1;
++
++    mxm->fb64 = mxm->m4800 ? ((packet[1] >> 3) & 1) : 0;
++    mxm->gpu_temp = packet[2];
++    mxm->smc_temp = packet[3];
++    mxm->fan_speed = packet[4];
++}
++
++static void
++setup_3dfx_send_byte(struct setup_3dfx_state *mxm, u8 packet)
++{
++    int bit;
++
++    pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, MXM_GPIO_00);
++    msleep(1);
++    for (bit = 7; bit >= 0; bit--) {
++        if ((packet >> bit) & 1)
++            pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, MXM_GPIO_11);
++        else
++            pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, MXM_GPIO_01);
++        msleep(1);
++        pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, MXM_GPIO_00);
++        msleep(1);
++    }
++}
++
++static void
++setup_3dfx_write_settings(struct setup_3dfx_state *mxm)
++{
++    u8 packet1;
++
++    if (!mxm->present)
++        return;
++
++    packet1 = (mxm->vcore_code << 4) | (mxm->m4800 && mxm->fb64 ? 0x08 : 0);
++    setup_3dfx_send_byte(mxm, mxm->brightness);
++    setup_3dfx_send_byte(mxm, packet1);
++}
++
++static const char *
++setup_3dfx_fb_name(const struct setup_3dfx_state *mxm)
++{
++    if (!mxm->m4800)
++        return "16 MB";
++    return mxm->fb64 ? "64 MB" : "32 MB";
++}
++
++static const char *
++setup_3dfx_gpu_name(const struct setup_3dfx_state *mxm)
++{
++    if (!mxm->present)
++        return "Unknown";
++    return mxm->m4800 ? "Napalm x1" : "Avenger";
++}
++
++static const char *
++setup_3dfx_pci_speed_name(const struct setup_3dfx_state *mxm)
++{
++    return mxm->present ? "66 MHz" : "Unknown";
++}
++
++static void
++setup_reboot(void);
++
++static void
++setup_3dfx_reset_defaults_and_reboot(void)
++{
++    struct setup_3dfx_state mxm;
++
++    setup_3dfx_init(&mxm);
++    if (mxm.present) {
++        setup_3dfx_defaults(&mxm);
++        setup_3dfx_write_settings(&mxm);
++    }
++
++    setup_reboot();
++}
++
++static int
++setup_3dfx_find_gpu(u16 *bdf_out, u16 *device_out)
++{
++    int bus;
++
++    for (bus = 0; bus < 256; bus++) {
++        int bdf;
++        foreachbdf(bdf, bus) {
++            if (pci_config_readw(bdf, PCI_VENDOR_ID) != TDFX_VENDOR_ID)
++                continue;
++            *bdf_out = bdf;
++            *device_out = pci_config_readw(bdf, PCI_DEVICE_ID);
++            return 0;
++        }
++    }
++
++    return -1;
++}
++
++static int
++setup_vbios_extract_revision(void *rom, char *buf, int len)
++{
++    static const char marker[] = "BIOS REV ";
++    int i;
++
++    for (i = 0; i < VSA_ROM_SIZE - sizeof(marker); i++) {
++        int j;
++
++        for (j = 0; j < sizeof(marker) - 1; j++) {
++            if (readb(rom + i + j) != marker[j])
++                break;
++        }
++        if (j == sizeof(marker) - 1) {
++            int out = 0;
++
++            i += sizeof(marker) - 1;
++            while (out < len - 1 && i < VSA_ROM_SIZE) {
++                u8 ch = readb(rom + i++);
++
++                if (ch <= ' ' || ch > '~')
++                    break;
++                buf[out++] = ch;
++            }
++            buf[out] = '\0';
++            return out ? 0 : -1;
++        }
++    }
++
++    return -1;
++}
++
++static void
++setup_3dfx_vbios_revision(char *buf, int len)
++{
++    u16 bdf;
++    u16 device;
++    u32 bar0;
++    u32 rom_orig;
++    u16 command_orig;
++    u32 misc0_orig;
++    u32 misc1_orig;
++    void *mmio;
++    void *rom;
++
++    strtcpy(buf, "Unknown", len);
++
++    if (setup_3dfx_find_gpu(&bdf, &device))
++        return;
++    if (device != TDFX_DEV_NAPALM && device != TDFX_DEV_NAPALM2)
++        return;
++
++    bar0 = pci_config_readl(bdf, PCI_BASE_ADDRESS_0) & ~0x0f;
++    if (!bar0)
++        return;
++
++    mmio = (void*)bar0;
++    rom = mmio + VSA_ROM_OFFSET;
++    command_orig = pci_config_readw(bdf, PCI_COMMAND);
++    rom_orig = pci_config_readl(bdf, PCI_ROM_ADDRESS);
++
++    pci_config_writew(bdf, PCI_COMMAND, command_orig | PCI_COMMAND_MEMORY);
++    pci_config_writel(bdf, PCI_ROM_ADDRESS, (bar0 + VSA_ROM_OFFSET)
++                      | PCI_ROM_ADDRESS_ENABLE);
++
++    misc0_orig = readl(mmio + VSA_MISC_INIT0);
++    misc1_orig = readl(mmio + VSA_MISC_INIT1);
++    writel(mmio + VSA_MISC_INIT0, misc0_orig & 0xbfffffff);
++    writel(mmio + VSA_MISC_INIT1, (misc1_orig & 0xfdffffff) | 0x10);
++    msleep(1);
++
++    if (readb(rom) == 0x55 && readb(rom + 1) == 0xaa)
++        setup_vbios_extract_revision(rom, buf, len);
++
++    writel(mmio + VSA_MISC_INIT0, misc0_orig);
++    writel(mmio + VSA_MISC_INIT1, misc1_orig);
++    pci_config_writel(bdf, PCI_ROM_ADDRESS, rom_orig);
++    pci_config_writew(bdf, PCI_COMMAND, command_orig);
++}
++
++static void
++setup_3dfx_raw_name(const struct setup_3dfx_state *mxm, char *buf, int len)
++{
++    static const char hex[] = "0123456789abcdef";
++    int i;
++
++    memset(buf, 0, len);
++    for (i = 0; i < 5 && (i * 3 + 2) < len; i++) {
++        buf[i * 3 + 0] = hex[mxm->raw[i] >> 4];
++        buf[i * 3 + 1] = hex[mxm->raw[i] & 0x0f];
++        if (i != 4 && (i * 3 + 2) < len)
++            buf[i * 3 + 2] = ' ';
++    }
++}
++
++static void
++setup_draw_menu_item(u8 col, const char *name, int menu, int current_menu,
++                     int focus)
++{
++    u8 attr = menu == current_menu && focus == SETUP_FOCUS_MENU
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++
++    setup_puts_attr(3, col, name, attr);
++}
++
++static void
++setup_draw_tabs(int current_menu, int focus)
++{
++    setup_puts(3, 1, "|                                                                            |");
++    setup_draw_menu_item(3, " Info ", SETUP_MENU_INFO, current_menu, focus);
++    setup_draw_menu_item(12, " Main ", SETUP_MENU_MAIN, current_menu, focus);
++    setup_draw_menu_item(22, " Advanced ", SETUP_MENU_ADVANCED, current_menu, focus);
++    setup_draw_menu_item(38, " Boot ", SETUP_MENU_BOOT, current_menu, focus);
++    setup_draw_menu_item(49, " 3dfx ", SETUP_MENU_3DFX, current_menu, focus);
++    setup_draw_menu_item(61, " Save & Exit ", SETUP_MENU_SAVE_EXIT, current_menu, focus);
++}
++
++static void
++setup_clear_page(void)
++{
++    int row;
++
++    for (row = 5; row <= 21; row++)
++        setup_puts_attr(row, 1, "|                                                                            |",
++                        SETUP_ATTR_NORMAL);
++}
++
++static void
++setup_draw_boot_page(const struct setup_boot_state *boot, int focus)
++{
++    u8 order_attr = boot->selected == 0 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    u8 delay_attr = boot->selected == 1 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++
++    setup_clear_page();
++    setup_draw_value_row(8, "Boot Order", setup_boot_order_name(boot->boot_order),
++                         SETUP_ATTR_NORMAL, order_attr);
++    setup_draw_value_row(9, "Boot Prompt Delay", setup_boot_delay_name(boot->boot_delay),
++                         SETUP_ATTR_NORMAL, delay_attr);
++    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Save  ESC Reboot  Left/Right Change");
++}
++
++static void
++setup_draw_action_row(u8 row, const char *name, int selected, int focus)
++{
++    setup_clear_line(row);
++    setup_puts(row, 1, "|");
++    setup_puts(row, 78, "|");
++    setup_puts_attr(row, SETUP_LABEL_COL, name,
++                    selected && focus == SETUP_FOCUS_PAGE
++                    ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL);
++}
++
++static void
++setup_draw_save_exit_page(const struct setup_save_exit_state *save, int focus)
++{
++    setup_clear_page();
++    setup_draw_action_row(8, "Save Changes and Reboot", save->selected == 0, focus);
++    setup_draw_action_row(9, "Discard Changes and Reboot", save->selected == 1, focus);
++    setup_draw_action_row(11, "Load Setup Defaults", save->selected == 2, focus);
++    setup_draw_action_row(13, "Apply 3dfx Defaults and Reboot", save->selected == 3, focus);
++    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Select  ESC Reboot");
++}
++
++static void
++setup_copy_line(char *dst, int dstlen, const char *src)
++{
++    int i;
++
++    for (i = 0; i < dstlen - 1 && src[i] && src[i] != '\n'; i++)
++        dst[i] = src[i];
++    dst[i] = '\0';
++}
++
++static void
++setup_cpu_brand(char *buf, int len)
++{
++    u32 regs[4];
++    u32 max_ext;
++    u32 *brand = (u32*)buf;
++    int i;
++
++    memset(buf, 0, len);
++    cpuid(0x80000000, &max_ext, &regs[1], &regs[2], &regs[3]);
++    if (max_ext < 0x80000004) {
++        strtcpy(buf, "Unknown", len);
++        return;
++    }
++
++    for (i = 0; i < 3 && (i + 1) * 16 < len; i++) {
++        cpuid(0x80000002 + i, &regs[0], &regs[1], &regs[2], &regs[3]);
++        brand[i * 4 + 0] = regs[0];
++        brand[i * 4 + 1] = regs[1];
++        brand[i * 4 + 2] = regs[2];
++        brand[i * 4 + 3] = regs[3];
++    }
++    buf[len - 1] = '\0';
++    while (*buf == ' ')
++        memmove(buf, buf + 1, strlen(buf));
++}
++
++static void
++setup_coreboot_version(char *buf, int len)
++{
++    int size;
++    char *build_info = romfile_loadfile("build_info", &size);
++    const char prefix[] = "COREBOOT_VERSION: ";
++    int i;
++
++    if (!build_info) {
++        strtcpy(buf, "Unknown", len);
++        return;
++    }
++
++    for (i = 0; i < size - sizeof(prefix); i++) {
++        if (memcmp(build_info + i, prefix, sizeof(prefix) - 1) == 0) {
++            setup_copy_line(buf, len, build_info + i + sizeof(prefix) - 1);
++            free(build_info);
++            return;
++        }
++    }
++
++    strtcpy(buf, "Unknown", len);
++    free(build_info);
++}
++
++static u64
++setup_system_memory_mb(void)
++{
++    u64 ram = 0;
++    int i;
++
++    for (i = 0; i < e820_count; i++) {
++        if (e820_list[i].type == E820_RAM)
++            ram += e820_list[i].size;
++    }
++
++    return ram >> 20;
++}
++
++static void
++setup_draw_info_page(const struct setup_3dfx_state *mxm)
++{
++    char value[64];
++
++    setup_clear_page();
++    setup_draw_value_row(6, "Laptop", "Precision M4800 3dfx Edition",
++                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
++    setup_draw_value_row(7, "BIOS Package", SETUP_BIOS_VERSION,
++                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
++
++    setup_cpu_brand(value, sizeof(value));
++    setup_draw_value_row(9, "CPU", value, SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
++
++    snprintf(value, sizeof(value), "%u MB", (u32)setup_system_memory_mb());
++    setup_draw_value_row(10, "System Memory", value,
++                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
++
++    setup_draw_value_row(12, "Card Model", mxm->model,
++                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
++    setup_draw_value_row(13, "GPU Model", setup_3dfx_gpu_name(mxm),
++                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
++    setup_draw_value_row(14, "GPU Memory", mxm->present ? setup_3dfx_fb_name(mxm) : "Unknown",
++                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
++    setup_3dfx_vbios_revision(value, sizeof(value));
++    setup_draw_value_row(15, "VBIOS Revision", value,
++                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
++    setup_draw_value_row(16, "Display Type", mxm->display,
++                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
++    setup_draw_value_row(17, "PCI Bus Speed", setup_3dfx_pci_speed_name(mxm),
++                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
++
++    setup_coreboot_version(value, sizeof(value));
++    setup_draw_value_row(19, "coreboot Version", value,
++                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
++    setup_draw_value_row(20, "SeaBIOS Version", VERSION,
++                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
++
++    setup_footer("F1 Help  Tab Menu  ESC Reboot");
++}
++
++static void
++setup_draw_datetime_row(u8 row, const char *name, int value, int selected,
++                        int focus, int width)
++{
++    char buf[8];
++    u8 value_attr = selected && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++
++    if (width == 4)
++        snprintf(buf, sizeof(buf), "%04u", value);
++    else
++        snprintf(buf, sizeof(buf), "%02u", value);
++    setup_draw_value_row(row, name, buf, SETUP_ATTR_NORMAL, value_attr);
++}
++
++static void
++setup_draw_main_page(const struct setup_datetime_state *dt, int focus)
++{
++    setup_clear_page();
++    setup_draw_datetime_row(8, "System Hour", dt->hour, dt->selected == 0,
++                            focus, 2);
++    setup_draw_datetime_row(9, "System Minute", dt->min, dt->selected == 1,
++                            focus, 2);
++    setup_draw_datetime_row(10, "System Second", dt->sec, dt->selected == 2,
++                            focus, 2);
++    setup_draw_datetime_row(12, "System Month", dt->month, dt->selected == 3,
++                            focus, 2);
++    setup_draw_datetime_row(13, "System Day", dt->day, dt->selected == 4,
++                            focus, 2);
++    setup_draw_datetime_row(14, "System Year", dt->year, dt->selected == 5,
++                            focus, 4);
++    setup_footer("F1 Help  Tab Menu  F10 Save Time  ESC Reboot  Left/Right Change");
++}
++
++static void
++setup_draw_advanced_page(const struct setup_advanced_state *adv, int focus)
++{
++    u8 sata_attr = adv->selected == 0 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    u8 hda_attr = adv->selected == 1 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    u8 turbo_attr = adv->selected == 2 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    u8 vga_attr = adv->selected == 3 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++
++    setup_clear_page();
++    setup_draw_value_row(8, "SATA Mode", setup_sata_mode_name(adv->sata_mode),
++                         SETUP_ATTR_NORMAL, sata_attr);
++    setup_draw_value_row(9, "HD Audio", setup_hda_name(adv->hda_disable),
++                         SETUP_ATTR_NORMAL, hda_attr);
++    setup_draw_value_row(10, "CPU Turbo", setup_turbo_name(adv->turbo_disable),
++                         SETUP_ATTR_NORMAL, turbo_attr);
++    setup_draw_value_row(11, "CPU Clock Cap", "Not implemented",
++                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
++    setup_draw_value_row(12, "Hyperthreading", "Not implemented",
++                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
++    setup_draw_value_row(13, "VGA Mux", setup_vga_mux_name(adv->vga_mux),
++                         SETUP_ATTR_NORMAL, vga_attr);
++    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Save  ESC Reboot  Left/Right Change");
++}
++
++static void
++setup_draw_3dfx_row(u8 row, const char *name, const char *value, u8 attr)
++{
++    setup_draw_value_row(row, name, value,
++                         attr == SETUP_ATTR_DISABLED ? SETUP_ATTR_DISABLED : SETUP_ATTR_NORMAL,
++                         attr);
++}
++
++static void
++setup_draw_3dfx_page(const struct setup_3dfx_state *mxm, int focus)
++{
++    char value[24];
++    u8 brightness_attr = mxm->selected == 0 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    u8 vcore_attr = mxm->selected == 1 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    u8 fb_attr = mxm->m4800
++        ? (mxm->selected == 2 && focus == SETUP_FOCUS_PAGE
++           ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL)
++        : SETUP_ATTR_DISABLED;
++
++    setup_clear_page();
++
++    if (!mxm->present) {
++        setup_draw_3dfx_row(8, "Card", mxm->model, SETUP_ATTR_DISABLED);
++        setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Apply  ESC Reboot");
++        return;
++    }
++
++    setup_draw_3dfx_row(6, "Card Model", mxm->model, SETUP_ATTR_DISABLED);
++    setup_draw_3dfx_row(7, "GPU Model", setup_3dfx_gpu_name(mxm), SETUP_ATTR_DISABLED);
++    setup_draw_3dfx_row(8, "Card Revision", mxm->revision, SETUP_ATTR_DISABLED);
++    setup_3dfx_vbios_revision(value, sizeof(value));
++    setup_draw_3dfx_row(9, "VBIOS Revision", value, SETUP_ATTR_DISABLED);
++    setup_draw_3dfx_row(10, "Display Type", mxm->display, SETUP_ATTR_DISABLED);
++    setup_draw_3dfx_row(11, "PCI Bus Speed", setup_3dfx_pci_speed_name(mxm),
++                         SETUP_ATTR_DISABLED);
++
++    snprintf(value, sizeof(value), "%u %%", mxm->brightness);
++    setup_draw_3dfx_row(13, "Panel Backlight", value, brightness_attr);
++    snprintf(value, sizeof(value), "%u.%u0 V", (mxm->vcore_code + 25) / 10,
++             (mxm->vcore_code + 25) % 10);
++    setup_draw_3dfx_row(14, "Core Voltage", value, vcore_attr);
++    setup_draw_3dfx_row(15, "Framebuffer Memory", setup_3dfx_fb_name(mxm), fb_attr);
++
++    snprintf(value, sizeof(value), "%u C", mxm->gpu_temp);
++    setup_draw_3dfx_row(17, "GPU Temperature", value, SETUP_ATTR_DISABLED);
++    snprintf(value, sizeof(value), "%u C", mxm->smc_temp);
++    setup_draw_3dfx_row(18, "SMC Temperature", value, SETUP_ATTR_DISABLED);
++    snprintf(value, sizeof(value), "%u %%", mxm->fan_speed);
++    setup_draw_3dfx_row(19, "Fan Speed", value, SETUP_ATTR_DISABLED);
++    setup_3dfx_raw_name(mxm, value, sizeof(value));
++    setup_draw_3dfx_row(20, "Raw Packet", value, SETUP_ATTR_DISABLED);
++
++    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Apply  ESC Reboot  Left/Right Change");
++}
++
++static void
++setup_reboot(void)
++{
++    qemu_reboot();
++    acpi_reboot();
++    i8042_reboot();
++    pci_reboot();
++    asm volatile("int3");
++
++    for (;;)
++        ;
++}
++
++static void
++setup_draw_current_page(int menu, int focus,
++                        const struct setup_advanced_state *adv,
++                        const struct setup_boot_state *boot,
++                        const struct setup_datetime_state *dt,
++                        const struct setup_3dfx_state *mxm,
++                        const struct setup_save_exit_state *save)
++{
++    setup_draw_tabs(menu, focus);
++    if (menu == SETUP_MENU_INFO)
++        setup_draw_info_page(mxm);
++    else if (menu == SETUP_MENU_MAIN)
++        setup_draw_main_page(dt, focus);
++    else if (menu == SETUP_MENU_ADVANCED)
++        setup_draw_advanced_page(adv, focus);
++    else if (menu == SETUP_MENU_BOOT)
++        setup_draw_boot_page(boot, focus);
++    else if (menu == SETUP_MENU_3DFX)
++        setup_draw_3dfx_page(mxm, focus);
++    else
++        setup_draw_save_exit_page(save, focus);
++}
++
++static void
++show_setup_screen(void)
++{
++    struct bregs br;
++    int menu = SETUP_MENU_INFO;
++    int focus = SETUP_FOCUS_MENU;
++    struct setup_advanced_state adv;
++    struct setup_boot_state boot;
++    struct setup_3dfx_state mxm;
++    struct setup_datetime_state dt;
++    struct setup_save_exit_state save;
++
++    wait_threads();
++    adv.sata_mode = setup_read_sata_mode();
++    adv.hda_disable = setup_read_hda_disable();
++    adv.turbo_disable = setup_read_turbo_disable();
++    adv.vga_mux = setup_read_vga_mux();
++    adv.selected = 0;
++    boot.boot_order = setup_read_boot_order();
++    boot.boot_delay = setup_read_boot_delay();
++    boot.selected = 0;
++    setup_3dfx_init(&mxm);
++    setup_3dfx_read_settings(&mxm);
++    setup_read_datetime(&dt);
++    dt.selected = 0;
++    save.selected = 0;
++
++    memset(&br, 0, sizeof(br));
++    br.flags = F_IF;
++    br.ax = 0x0003;
++    call16_int(0x10, &br);
++
++    memset(&br, 0, sizeof(br));
++    br.flags = F_IF;
++    br.ax = 0x0600;
++    br.bh = 0x1f;
++    br.cx = 0x0000;
++    br.dx = 0x184f;
++    call16_int(0x10, &br);
++
++    setup_puts_attr(1, 16, "Precision M4800 3dfx Edition - Setup Utility", SETUP_ATTR_TITLE);
++    setup_puts(2, 1, "+----------------------------------------------------------------------------+");
++    setup_puts(4, 1, "+----------------------------------------------------------------------------+");
++    setup_puts(22, 1, "+----------------------------------------------------------------------------+");
++    setup_draw_current_page(menu, focus, &adv, &boot, &dt, &mxm, &save);
++    setup_puts(24, 0, "");
++
++    for (;;) {
++        int key = get_keystroke_full(1000);
++        int scan_code;
++
++        if (key < 0) {
++            if (menu == SETUP_MENU_MAIN && focus == SETUP_FOCUS_PAGE)
++                setup_draw_main_page(&dt, focus);
++            continue;
++        }
++
++        scan_code = key >> 8;
++        if (scan_code == SETUP_KEY_ESC)
++            setup_reboot();
++
++        if (scan_code == SETUP_KEY_TAB) {
++            focus = SETUP_FOCUS_MENU;
++            menu = menu == SETUP_MENU_COUNT - 1 ? 0 : menu + 1;
++            setup_draw_current_page(menu, focus, &adv, &boot, &dt, &mxm, &save);
++            setup_clear_message();
++            continue;
++        }
++
++        if (focus == SETUP_FOCUS_MENU) {
++            if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_RIGHT) {
++                if (scan_code == SETUP_KEY_LEFT)
++                    menu = menu == 0 ? SETUP_MENU_COUNT - 1 : menu - 1;
++                else
++                    menu = menu == SETUP_MENU_COUNT - 1 ? 0 : menu + 1;
++                setup_draw_current_page(menu, focus, &adv, &boot, &dt, &mxm, &save);
++                setup_clear_message();
++            }
++            if (scan_code == SETUP_KEY_DOWN || scan_code == SETUP_KEY_ENTER) {
++                if (menu == SETUP_MENU_INFO)
++                    continue;
++                focus = SETUP_FOCUS_PAGE;
++                setup_draw_current_page(menu, focus, &adv, &boot, &dt, &mxm, &save);
++            }
++            continue;
++        }
++
++        if (menu == SETUP_MENU_MAIN) {
++            if (scan_code == SETUP_KEY_UP || scan_code == SETUP_KEY_DOWN) {
++                if (scan_code == SETUP_KEY_UP && dt.selected == 0) {
++                    focus = SETUP_FOCUS_MENU;
++                    setup_draw_current_page(menu, focus, &adv, &boot, &dt, &mxm, &save);
++                    continue;
++                }
++                if (scan_code == SETUP_KEY_UP)
++                    dt.selected = dt.selected == 0 ? 5 : dt.selected - 1;
++                else
++                    dt.selected = dt.selected == 5 ? 0 : dt.selected + 1;
++                setup_draw_main_page(&dt, focus);
++                setup_clear_message();
++                continue;
++            }
++            if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_RIGHT
++                || scan_code == SETUP_KEY_MINUS || scan_code == SETUP_KEY_PLUS
++                || scan_code == SETUP_KEY_ENTER) {
++                int increase = scan_code != SETUP_KEY_MINUS && scan_code != SETUP_KEY_LEFT;
++                if (dt.selected == 0)
++                    dt.hour = increase ? (dt.hour + 1) % 24 : (dt.hour == 0 ? 23 : dt.hour - 1);
++                else if (dt.selected == 1)
++                    dt.min = increase ? (dt.min + 1) % 60 : (dt.min == 0 ? 59 : dt.min - 1);
++                else if (dt.selected == 2)
++                    dt.sec = increase ? (dt.sec + 1) % 60 : (dt.sec == 0 ? 59 : dt.sec - 1);
++                else if (dt.selected == 3)
++                    dt.month = increase ? (dt.month == 12 ? 1 : dt.month + 1)
++                                        : (dt.month <= 1 ? 12 : dt.month - 1);
++                else if (dt.selected == 4)
++                    dt.day = increase ? (dt.day == 31 ? 1 : dt.day + 1)
++                                      : (dt.day <= 1 ? 31 : dt.day - 1);
++                else if (dt.selected == 5)
++                    dt.year = increase ? dt.year + 1 : (dt.year > 1980 ? dt.year - 1 : dt.year);
++                setup_draw_main_page(&dt, focus);
++                continue;
++            }
++            if (scan_code == SETUP_KEY_F10) {
++                setup_write_datetime(&dt);
++                setup_draw_main_page(&dt, focus);
++                setup_message("Time and date saved.");
++            }
++            continue;
++        }
++
++        if (menu == SETUP_MENU_ADVANCED) {
++            if (scan_code == SETUP_KEY_UP || scan_code == SETUP_KEY_DOWN) {
++                if (scan_code == SETUP_KEY_UP && adv.selected == 0) {
++                    focus = SETUP_FOCUS_MENU;
++                    setup_draw_current_page(menu, focus, &adv, &boot, &dt, &mxm, &save);
++                    continue;
++                }
++                if (scan_code == SETUP_KEY_UP)
++                    adv.selected = adv.selected == 0 ? 3 : adv.selected - 1;
++                else
++                    adv.selected = adv.selected == 3 ? 0 : adv.selected + 1;
++                setup_draw_advanced_page(&adv, focus);
++                setup_clear_message();
++                continue;
++            }
++            if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_RIGHT
++                || scan_code == SETUP_KEY_MINUS || scan_code == SETUP_KEY_PLUS
++                || scan_code == SETUP_KEY_ENTER) {
++                if (adv.selected == 0) {
++                    if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_MINUS)
++                        adv.sata_mode = adv.sata_mode == 0 ? 2 : adv.sata_mode - 1;
++                    else
++                        adv.sata_mode = adv.sata_mode == 2 ? 0 : adv.sata_mode + 1;
++                } else if (adv.selected == 1) {
++                    adv.hda_disable = !adv.hda_disable;
++                } else if (adv.selected == 2) {
++                    adv.turbo_disable = !adv.turbo_disable;
++                } else {
++                    adv.vga_mux = !adv.vga_mux;
++                }
++                setup_draw_advanced_page(&adv, focus);
++            }
++            if (scan_code == SETUP_KEY_F9) {
++                setup_defaults(&adv, &boot);
++                setup_draw_advanced_page(&adv, focus);
++                setup_message("Setup defaults loaded. Press F10 to save changes.");
++            }
++            if (scan_code == SETUP_KEY_F10) {
++                setup_write_advanced(&adv);
++                setup_draw_advanced_page(&adv, focus);
++                setup_message("Saved. Press ESC to reboot and apply setup changes.");
++            }
++            continue;
++        }
++
++        if (menu == SETUP_MENU_BOOT) {
++            if (scan_code == SETUP_KEY_UP || scan_code == SETUP_KEY_DOWN) {
++                if (scan_code == SETUP_KEY_UP && boot.selected == 0) {
++                    focus = SETUP_FOCUS_MENU;
++                    setup_draw_current_page(menu, focus, &adv, &boot, &dt, &mxm, &save);
++                    continue;
++                }
++                if (scan_code == SETUP_KEY_UP)
++                    boot.selected = boot.selected == 0 ? 1 : boot.selected - 1;
++                else
++                    boot.selected = boot.selected == 1 ? 0 : boot.selected + 1;
++                setup_draw_boot_page(&boot, focus);
++                setup_clear_message();
++                continue;
++            }
++            if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_RIGHT
++                || scan_code == SETUP_KEY_MINUS || scan_code == SETUP_KEY_PLUS
++                || scan_code == SETUP_KEY_ENTER) {
++                if (boot.selected == 0) {
++                    if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_MINUS)
++                        boot.boot_order = boot.boot_order == 0 ? 3 : boot.boot_order - 1;
++                    else
++                        boot.boot_order = boot.boot_order == 3 ? 0 : boot.boot_order + 1;
++                } else {
++                    if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_MINUS)
++                        boot.boot_delay = boot.boot_delay == 0 ? 3 : boot.boot_delay - 1;
++                    else
++                        boot.boot_delay = boot.boot_delay == 3 ? 0 : boot.boot_delay + 1;
++                }
++                setup_draw_boot_page(&boot, focus);
++                continue;
++            }
++            if (scan_code == SETUP_KEY_F9) {
++                boot.boot_order = SETUP_BOOT_ORDER_DEFAULT;
++                boot.boot_delay = SETUP_BOOT_DELAY_DEFAULT;
++                setup_draw_boot_page(&boot, focus);
++                setup_message("Boot defaults loaded. Press F10 to save changes.");
++                continue;
++            }
++            if (scan_code == SETUP_KEY_F10) {
++                setup_write_boot(&boot);
++                setup_draw_boot_page(&boot, focus);
++                setup_message("Saved. Press ESC to reboot and apply setup changes.");
++                continue;
++            }
++            continue;
++        }
++
++        if (menu == SETUP_MENU_SAVE_EXIT) {
++            if (scan_code == SETUP_KEY_UP || scan_code == SETUP_KEY_DOWN) {
++                if (scan_code == SETUP_KEY_UP && save.selected == 0) {
++                    focus = SETUP_FOCUS_MENU;
++                    setup_draw_current_page(menu, focus, &adv, &boot, &dt, &mxm, &save);
++                    continue;
++                }
++                if (scan_code == SETUP_KEY_UP)
++                    save.selected = save.selected == 0 ? 3 : save.selected - 1;
++                else
++                    save.selected = save.selected == 3 ? 0 : save.selected + 1;
++                setup_draw_save_exit_page(&save, focus);
++                setup_clear_message();
++                continue;
++            }
++            if (scan_code == SETUP_KEY_F9) {
++                setup_defaults(&adv, &boot);
++                save.selected = 0;
++                setup_draw_save_exit_page(&save, focus);
++                setup_message("Setup defaults loaded. Select save to keep them.");
++                continue;
++            }
++            if (scan_code == SETUP_KEY_ENTER || scan_code == SETUP_KEY_F10) {
++                if (save.selected == 0) {
++                    setup_write_all(&adv, &boot, &dt);
++                    setup_reboot();
++                } else if (save.selected == 1) {
++                    setup_reboot();
++                } else if (save.selected == 2) {
++                    setup_defaults(&adv, &boot);
++                    save.selected = 0;
++                    setup_draw_save_exit_page(&save, focus);
++                    setup_message("Setup defaults loaded. Select save to keep them.");
++                } else {
++                    setup_3dfx_reset_defaults_and_reboot();
++                }
++                continue;
++            }
++            continue;
++        }
++
++        if (menu != SETUP_MENU_3DFX) {
++            if (scan_code == SETUP_KEY_UP) {
++                focus = SETUP_FOCUS_MENU;
++                setup_draw_current_page(menu, focus, &adv, &boot, &dt, &mxm, &save);
++            }
++            continue;
++        }
++
++        if (scan_code == SETUP_KEY_UP || scan_code == SETUP_KEY_DOWN) {
++            int max_selected = mxm.m4800 ? 2 : 1;
++            if (scan_code == SETUP_KEY_UP && mxm.selected == 0) {
++                focus = SETUP_FOCUS_MENU;
++                setup_draw_current_page(menu, focus, &adv, &boot, &dt, &mxm, &save);
++                continue;
++            }
++            if (scan_code == SETUP_KEY_UP)
++                mxm.selected = mxm.selected == 0 ? max_selected : mxm.selected - 1;
++            else
++                mxm.selected = mxm.selected == max_selected ? 0 : mxm.selected + 1;
++            setup_draw_3dfx_page(&mxm, focus);
++            setup_clear_message();
++            continue;
++        }
++
++        if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_RIGHT
++            || scan_code == SETUP_KEY_MINUS || scan_code == SETUP_KEY_PLUS
++            || scan_code == SETUP_KEY_ENTER) {
++            int increase = scan_code != SETUP_KEY_MINUS && scan_code != SETUP_KEY_LEFT;
++
++            if (mxm.present && mxm.selected == 0) {
++                if (increase && mxm.brightness < 100)
++                    mxm.brightness++;
++                if (!increase && mxm.brightness > 10)
++                    mxm.brightness--;
++            } else if (mxm.present && mxm.selected == 1) {
++                if (increase && mxm.vcore_code < 6)
++                    mxm.vcore_code++;
++                if (!increase && mxm.vcore_code > 0)
++                    mxm.vcore_code--;
++            } else if (mxm.present && mxm.m4800 && mxm.selected == 2) {
++                mxm.fb64 = !mxm.fb64;
++            }
++            setup_draw_3dfx_page(&mxm, focus);
++            continue;
++        }
++
++        if (scan_code == SETUP_KEY_F9) {
++            if (mxm.present) {
++                setup_3dfx_defaults(&mxm);
++                setup_draw_3dfx_page(&mxm, focus);
++                setup_message("3dfx defaults loaded. Press F10 to apply to the MXM card.");
++            }
++            continue;
++        }
++
++        if (scan_code == SETUP_KEY_F10) {
++            if (mxm.present) {
++                setup_3dfx_write_settings(&mxm);
++                setup_draw_3dfx_page(&mxm, focus);
++                setup_message("3dfx settings applied to MXM card.");
++            }
++            continue;
++        }
++    }
++}
++
+ // Show IPL option menu.
+ void
+ interactive_bootmenu(void)
+@@ -708,18 +2324,43 @@ interactive_bootmenu(void)
+         return;
+     }
+ 
+-    while (get_keystroke(0) >= 0)
+-        ;
++    for (;;) {
++        int oldkey = get_keystroke_full(0);
++
++        if (oldkey < 0)
++            break;
++        if ((oldkey & 0xff) == SETUP_3DFX_RESET_KEY
++            || (oldkey & 0xff) == SETUP_3DFX_RESET_KEY_LOWER) {
++            setup_3dfx_reset_defaults_and_reboot();
++            return;
++        }
++    }
+ 
+     char *bootmsg = romfile_loadfile("etc/boot-menu-message", NULL);
+     int menukey = romfile_loadint("etc/boot-menu-key", 1);
+-    printf("%s", bootmsg ?: "\nPress ESC for boot menu.\n\n");
++    printf("%s", bootmsg ?: "\nPress ESC for boot menu, DEL for setup.\n\n");
+     free(bootmsg);
+ 
+-    u32 menutime = romfile_loadint("etc/boot-menu-wait", DEFAULT_BOOTMENU_WAIT);
++    u32 menutime = setup_boot_delay_ms();
+     enable_bootsplash();
+-    int scan_code = get_keystroke(menutime);
++    int keystroke = get_keystroke_full(menutime);
+     disable_bootsplash();
++    if (keystroke < 0)
++        return;
++
++    int scan_code = keystroke >> 8;
++    int key_ascii = keystroke & 0xff;
++    if (key_ascii == SETUP_3DFX_RESET_KEY
++        || key_ascii == SETUP_3DFX_RESET_KEY_LOWER) {
++        setup_3dfx_reset_defaults_and_reboot();
++        return;
++    }
++
++    if (scan_code == SETUP_MENU_KEY) {
++        show_setup_screen();
++        return;
++    }
++
+     if (scan_code != menukey)
+         return;
+ 

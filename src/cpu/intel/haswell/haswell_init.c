@@ -13,6 +13,7 @@
 #include <cpu/x86/name.h>
 #include <delay.h>
 #include <northbridge/intel/haswell/haswell.h>
+#include <option.h>
 #include <southbridge/intel/lynxpoint/pch.h>
 #include <cpu/intel/common/common.h>
 #include <types.h>
@@ -551,8 +552,10 @@ static void cpu_core_init(struct device *cpu)
 	/* Set energy policy */
 	set_energy_perf_bias(ENERGY_POLICY_NORMAL);
 
-	/* Enable Turbo */
-	enable_turbo();
+	if (get_uint_option("turbo_disable", 0))
+		disable_turbo();
+	else
+		enable_turbo();
 }
 
 /* MP initialization support. */

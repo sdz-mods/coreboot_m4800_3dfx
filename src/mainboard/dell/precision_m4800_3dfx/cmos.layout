@@ -22,6 +22,14 @@ entries
 413	1	e	1	wwan
 415	1	e	1	wlan
 
+# coreboot config options: SATA
+416	2	e	15	sata_mode
+418	1	e	1	hda_disable
+419	1	e	1	turbo_disable
+420	1	e	16	vga_mux
+421	2	e	17	boot_order
+427	2	e	18	boot_delay
+
 # coreboot config options: ME
 424	1	e	14	me_state
 425	2	h	0	me_state_prev
@@ -62,6 +70,19 @@ enumerations
 7	2	Keep
 14	0	Normal
 14	1	Disabled
+15	0	AHCI
+15	1	IDE_Native
+15	2	IDE_Legacy
+16	0	VGA
+16	1	Dock
+17	0	HDD_CD_USB_Payload
+17	1	CD_HDD_USB_Payload
+17	2	USB_HDD_CD_Payload
+17	3	Payload_HDD_CD_USB
+18	0	1_sec
+18	1	3_sec
+18	2	5_sec
+18	3	10_sec
 
 
 # -----------------------------------------------------------------

@@ -7,6 +7,7 @@
 #include <device/pci.h>
 #include <device/pci_ids.h>
 #include <delay.h>
+#include <option.h>
 #include "chip.h"
 #include "iobp.h"
 #include "pch.h"
@@ -24,6 +25,16 @@
 #define SATA_MAP_AHCI		0x0060
 #define SATA_MAP_IDE		0x0000
 #define SATA_PROGIF_NATIVE	0x05
+
+static uint8_t get_sata_mode(const struct southbridge_intel_lynxpoint_config *config)
+{
+	uint8_t sata_mode = get_uint_option("sata_mode", config->sata_mode);
+
+	if (sata_mode > SATA_MODE_IDE_LEGACY)
+		sata_mode = config->sata_mode;
+
+	return sata_mode;
+}
 
 static inline u32 sir_read(struct device *dev, int idx)
 {
@@ -61,7 +72,8 @@ static void sata_init(struct device *dev)
 		return;
 	}
 
-	const bool ahci_mode = config->sata_mode == SATA_MODE_AHCI;
+	const uint8_t sata_mode = get_sata_mode(config);
+	const bool ahci_mode = sata_mode == SATA_MODE_AHCI;
 
 	/* SATA configuration */
 
@@ -73,7 +85,7 @@ static void sata_init(struct device *dev)
 	} else {
 		pci_write_config16(dev, PCI_COMMAND, PCI_COMMAND_MASTER | PCI_COMMAND_IO);
 
-		if (config->sata_mode == SATA_MODE_IDE_NATIVE) {
+		if (sata_mode == SATA_MODE_IDE_NATIVE) {
 			pci_or_config8(dev, PCI_CLASS_PROG, SATA_PROGIF_NATIVE);
 			printk(BIOS_DEBUG, "SATA: Controller in IDE native mode.\n");
 		} else {
@@ -235,7 +247,7 @@ static void sata_enable(struct device *dev)
 	 * Set SATA controller mode early so the resource allocator can
 	 * properly assign resources for the controller.
 	 */
-	if (config->sata_mode == SATA_MODE_AHCI)
+	if (get_sata_mode(config) == SATA_MODE_AHCI)
 		sata_mode = SATA_MAP_AHCI;
 	else
 		sata_mode = SATA_MAP_IDE;

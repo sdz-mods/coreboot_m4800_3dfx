@@ -6,6 +6,7 @@
 #include <device/mmio.h>
 #include <device/pci_def.h>
 #include <device/pci_ops.h>
+#include <option.h>
 
 #include "haswell.h"
 
@@ -68,6 +69,12 @@ static void __maybe_unused haswell_disable_hda_early(void)
 
 	printk(BIOS_DEBUG,
 	       "E: PCH HD-Audio forced off (RCBA.FD.HDAD set)\n");
+}
+
+static void haswell_setup_hda_early(void)
+{
+	if (get_uint_option("hda_disable", 0) == 1)
+		haswell_disable_hda_early();
 }
 
 static void haswell_setup_igd(void)
@@ -222,8 +229,7 @@ void haswell_early_initialization(void)
 	/* Disable the iGPU before MRC runs */
 	haswell_disable_igd_early();
 
-	/* Keep this available for builds that need PCH HDA disabled. */
-	/* haswell_disable_hda_early(); */
+	haswell_setup_hda_early();
 
 	/* Setup IOMMU BARs */
 	haswell_setup_iommu();
