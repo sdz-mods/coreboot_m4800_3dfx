@@ -47,6 +47,11 @@ enum ec_mute {
 	UNMUTE,
 };
 
+enum ec_vga_mux_target {
+	VGA_MUX_CONNECTOR = 0,
+	VGA_MUX_DOCK,
+};
+
 u8 mec5035_mouse_touchpad(enum ec_mouse_setting setting);
 void mec5035_cpu_ok(void);
 void mec5035_early_init(void);

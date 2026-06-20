@@ -120,20 +120,20 @@ static void mec5035_gpio_set(u8 gpio, u8 value)
  * GPIOs (reached via CMD_GPIO_CTRL). They select the source GPU and the
  * destination connector:
  *
- *   gpio 1  CRT_SWITCH    0 = motherboard (laptop) VGA, 1 = docking VGA
- *   gpio 10 DGPU_SELECT#  0 = discrete GPU,             1 = integrated GPU
- *   gpio 11 EDID_SELECT#  0 = discrete GPU,             1 = integrated GPU
+ *   gpio 1  DGPU_SELECT#  0 = discrete GPU,             1 = integrated GPU
+ *   gpio 10 EDID_SELECT#  0 = discrete GPU,             1 = integrated GPU
+ *   gpio 11 CRT_SWITCH    0 = motherboard (laptop) VGA, 1 = docking VGA
  *
- * Driving all three to 0 routes the discrete GPU to the laptop's own VGA
- * port. The EC numbers these GPIOs from its own table (like the radio
- * devices), so the indices were determined empirically, not from the pin
- * names on the schematic.
+ * Driving DGPU_SELECT# and EDID_SELECT# to 0 selects the discrete GPU. The
+ * CRT_SWITCH GPIO then chooses the laptop VGA connector or docking VGA. The
+ * EC numbers these GPIOs from its own table (like the radio devices), so the
+ * indices were determined empirically, not from the pin names on the schematic.
  */
-static void mec5035_set_vga_mux_discrete(void)
+static void mec5035_set_vga_mux_discrete(enum ec_vga_mux_target target)
 {
-	mec5035_gpio_set(1, 0);		/* CRT_SWITCH   -> laptop VGA */
-	mec5035_gpio_set(10, 0);	/* DGPU_SELECT# -> discrete   */
-	mec5035_gpio_set(11, 0);	/* EDID_SELECT# -> discrete   */
+	mec5035_gpio_set(1, 0);		/* DGPU_SELECT# -> discrete   */
+	mec5035_gpio_set(10, 0);	/* EDID_SELECT# -> discrete   */
+	mec5035_gpio_set(11, target);	/* CRT_SWITCH */
 }
 
 void mec5035_early_init(void)
@@ -152,8 +152,7 @@ static void mec5035_init(struct device *dev)
 	mec5035_power_button_route(HOST);
 	mec5035_mute_ctrl(UNMUTE);
 
-	/* Route the laptop VGA port to the discrete GPU (3dfx MXM). */
-	mec5035_set_vga_mux_discrete();
+	mec5035_set_vga_mux_discrete(get_uint_option("vga_mux", VGA_MUX_CONNECTOR));
 
 	pc_keyboard_init(NO_AUX_DEVICE);
 
