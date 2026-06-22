@@ -11,6 +11,14 @@
 #include "pch.h"
 #include "hda_verb.h"
 
+static void azalia_route_irq(struct device *dev)
+{
+	RCBA32(D27IP) = INTA << D27IP_ZIP;
+	RCBA16(D27IR) = DIR_ROUTE(PIRQE, PIRQF, PIRQG, PIRQH);
+	pci_write_config8(dev, PCI_INTERRUPT_LINE, 0x04);
+	pci_write_config8(pcidev_on_root(0x1f, 0), PIRQE_ROUT, 0x04);
+}
+
 static void azalia_pch_init(struct device *dev, u8 *base)
 {
 	u8 reg8;
@@ -83,6 +91,8 @@ static void azalia_init(struct device *dev)
 	u8 *base;
 	struct resource *res;
 	u32 codec_mask;
+
+	azalia_route_irq(dev);
 
 	/* Find base address */
 	res = probe_resource(dev, PCI_BASE_ADDRESS_0);

@@ -5,6 +5,8 @@
 
 void mainboard_config_rcba(void)
 {
+	RCBA32(D27IP) = INTA << D27IP_ZIP;
+	RCBA16(D27IR) = DIR_ROUTE(PIRQE, PIRQF, PIRQG, PIRQH);
 }
 
 const struct usb2_port_config mainboard_usb2_ports[MAX_USB2_PORTS] = {

@@ -94,9 +94,14 @@ static void sata_init(struct device *dev)
 		}
 	}
 
-	/* Set Interrupt Line */
-	/* Interrupt Pin is set by D31IP.PIP */
-	pci_write_config8(dev, PCI_INTERRUPT_LINE, 0x0a);
+	/* Set Interrupt Line. Interrupt Pin is set by D31IP.PIP. */
+	if (sata_mode == SATA_MODE_IDE_NATIVE) {
+		RCBA16(D31IR) = DIR_ROUTE(PIRQA, PIRQD, PIRQC, PIRQD);
+		pci_write_config8(dev, PCI_INTERRUPT_LINE, 0x03);
+		pci_write_config8(pcidev_on_root(0x1f, 0), PIRQD_ROUT, 0x03);
+	} else {
+		pci_write_config8(dev, PCI_INTERRUPT_LINE, 0x0a);
+	}
 
 	pci_write_config16(dev, IDE_TIM_PRI, IDE_DECODE_ENABLE);
 	pci_write_config16(dev, IDE_TIM_SEC, IDE_DECODE_ENABLE);
