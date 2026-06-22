@@ -1,5 +1,5 @@
 diff --git a/src/boot.c b/src/boot.c
-index 1effd802..a1eecf1a 100644
+index 1effd802..d65b730e 100644
 --- a/src/boot.c
 +++ b/src/boot.c
 @@ -8,9 +8,12 @@
@@ -111,7 +111,7 @@ index 1effd802..a1eecf1a 100644
  }
  
  
-@@ -681,6 +735,121 @@ get_keystroke(int msec)
+@@ -681,6 +735,132 @@ get_keystroke(int msec)
   ****************************************************************/
  
  #define DEFAULT_BOOTMENU_WAIT 2500
@@ -144,6 +144,15 @@ index 1effd802..a1eecf1a 100644
 +#define SETUP_LABEL_COL		5
 +#define SETUP_VALUE_COL		33
 +
++#define SETUP_BOX_H		0xc4
++#define SETUP_BOX_V		0xb3
++#define SETUP_BOX_TL		0xda
++#define SETUP_BOX_TR		0xbf
++#define SETUP_BOX_BL		0xc0
++#define SETUP_BOX_BR		0xd9
++#define SETUP_BOX_LT		0xc3
++#define SETUP_BOX_RT		0xb4
++
 +#define SETUP_MENU_INFO		0
 +#define SETUP_MENU_MAIN		1
 +#define SETUP_MENU_ADVANCED	2
@@ -160,6 +169,7 @@ index 1effd802..a1eecf1a 100644
 +#define SETUP_KEY_MINUS		0x0c
 +#define SETUP_KEY_PLUS		0x0d
 +#define SETUP_KEY_ENTER		0x1c
++#define SETUP_KEY_F1		0x3b
 +#define SETUP_KEY_LEFT		0x4b
 +#define SETUP_KEY_RIGHT		0x4d
 +#define SETUP_KEY_UP		0x48
@@ -196,6 +206,7 @@ index 1effd802..a1eecf1a 100644
 +    u8 brightness;
 +    u8 vcore_code;
 +    u8 fb64;
++    u8 vsa_blank_fix_en;
 +    u8 gpu_temp;
 +    u8 smc_temp;
 +    u8 fan_speed;
@@ -233,13 +244,21 @@ index 1effd802..a1eecf1a 100644
  
  static const char menuchars[] = {
      '1', '2', '3', '4', '5', '6', '7', '8', '9',
-@@ -690,6 +859,1453 @@ static const char menuchars[] = {
+@@ -690,36 +870,1717 @@ static const char menuchars[] = {
      'u', 'v', 'w', 'x', 'y', 'z'
  };
  
+-// Show IPL option menu.
+-void
+-interactive_bootmenu(void)
 +static void
 +setup_set_cursor(u8 row, u8 col)
-+{
+ {
+-    if (! CONFIG_BOOTMENU)
+-        return;
+-    int show_boot_menu = romfile_loadint("etc/show-boot-menu", 1);
+-    if (!show_boot_menu)
+-        return;
 +    struct bregs br;
 +    memset(&br, 0, sizeof(br));
 +    br.flags = F_IF;
@@ -247,6 +266,25 @@ index 1effd802..a1eecf1a 100644
 +    br.bh = 0;
 +    br.dh = row;
 +    br.dl = col;
++    call16_int(0x10, &br);
++}
+ 
+-    // skip menu if only one boot device and no TPM
+-    if (show_boot_menu == 2 && !tpm_can_show_menu()
+-        && !hlist_empty(&BootList) && !BootList.first->next) {
+-        dprintf(1, "Only one boot device present. Skip boot menu.\n");
+-        printf("\n");
+-        return;
++static void
++setup_hide_cursor(void)
++{
++    struct bregs br;
++
++    memset(&br, 0, sizeof(br));
++    br.flags = F_IF;
++    br.ah = 0x01;
++    br.ch = 0x20;
++    br.cl = 0x00;
 +    call16_int(0x10, &br);
 +}
 +
@@ -257,9 +295,10 @@ index 1effd802..a1eecf1a 100644
 +    while (*str && col < 79) {
 +        printf("%c", *str++);
 +        col++;
-+    }
+     }
 +}
-+
+ 
+-    while (get_keystroke(0) >= 0)
 +static void
 +setup_puts_attr(u8 row, u8 col, const char *str, u8 attr)
 +{
@@ -281,35 +320,107 @@ index 1effd802..a1eecf1a 100644
 +}
 +
 +static void
-+setup_clear_line(u8 row)
++setup_put_char_attr(u8 row, u8 col, u8 ch, u8 attr)
++{
++    struct bregs br;
++
++    setup_set_cursor(row, col);
++    memset(&br, 0, sizeof(br));
++    br.flags = F_IF;
++    br.ah = 0x09;
++    br.al = ch;
++    br.bh = 0;
++    br.bl = attr;
++    br.cx = 1;
++    call16_int(0x10, &br);
++}
++
++static void
++setup_draw_hline(u8 row, u8 col, u8 width, u8 attr)
++{
++    u8 i;
++
++    for (i = 0; i < width; i++)
++        setup_put_char_attr(row, col + i, SETUP_BOX_H, attr);
++}
++
++static void
++setup_draw_box(u8 top, u8 left, u8 bottom, u8 right, u8 attr)
++{
++    u8 row;
++
++    setup_put_char_attr(top, left, SETUP_BOX_TL, attr);
++    setup_draw_hline(top, left + 1, right - left - 1, attr);
++    setup_put_char_attr(top, right, SETUP_BOX_TR, attr);
++
++    for (row = top + 1; row < bottom; row++) {
++        setup_put_char_attr(row, left, SETUP_BOX_V, attr);
++        setup_put_char_attr(row, right, SETUP_BOX_V, attr);
++    }
++
++    setup_put_char_attr(bottom, left, SETUP_BOX_BL, attr);
++    setup_draw_hline(bottom, left + 1, right - left - 1, attr);
++    setup_put_char_attr(bottom, right, SETUP_BOX_BR, attr);
++}
++
++static void
++setup_draw_frame_row(u8 row, u8 attr)
 +{
 +    setup_puts_attr(row, 1,
 +                    "                                                                              ",
 +                    SETUP_ATTR_NORMAL);
++    setup_put_char_attr(row, 1, SETUP_BOX_V, attr);
++    setup_put_char_attr(row, 78, SETUP_BOX_V, attr);
 +}
 +
 +static void
 +setup_clear_message(void)
 +{
-+    setup_clear_line(24);
++    setup_draw_frame_row(22, SETUP_ATTR_NORMAL);
 +}
 +
 +static void
 +setup_message(const char *msg)
 +{
 +    setup_clear_message();
-+    setup_puts_attr(24, 2, msg, SETUP_ATTR_STATUS);
++    setup_puts_attr(22, 2, msg, SETUP_ATTR_STATUS);
 +}
 +
 +static void
 +setup_footer(const char *msg)
 +{
-+    setup_puts_attr(23, 1,
++    setup_puts_attr(24, 1,
 +                    "                                                                              ",
 +                    SETUP_ATTR_STATUS);
-+    setup_puts_attr(23, 2, msg, SETUP_ATTR_STATUS);
++    setup_puts_attr(24, 2, msg, SETUP_ATTR_STATUS);
 +}
 +
++static void
++setup_help_popup(const char *title, const char *line1, const char *line2,
++                 const char *line3, const char *action)
++{
++    int row;
++
++    for (row = 8; row <= 17; row++)
++        setup_puts_attr(row, 12,
++                        "                                                        ",
++                        SETUP_ATTR_STATUS);
++    setup_draw_box(8, 12, 17, 67, SETUP_ATTR_STATUS);
++    setup_puts_attr(9, 15, title, SETUP_ATTR_TITLE);
++    setup_puts_attr(11, 15, line1, SETUP_ATTR_STATUS);
++    setup_puts_attr(12, 15, line2, SETUP_ATTR_STATUS);
++    setup_puts_attr(13, 15, line3, SETUP_ATTR_STATUS);
++    setup_puts_attr(15, 15, action, SETUP_ATTR_STATUS);
++    setup_puts_attr(16, 15, "Press any key to return.", SETUP_ATTR_STATUS);
++
++    while (get_keystroke_full(1000) < 0)
+         ;
++}
+ 
+-    char *bootmsg = romfile_loadfile("etc/boot-menu-message", NULL);
+-    int menukey = romfile_loadint("etc/boot-menu-key", 1);
+-    printf("%s", bootmsg ?: "\nPress ESC for boot menu.\n\n");
+-    free(bootmsg);
 +static void
 +setup_draw_value_row(u8 row, const char *name, const char *value,
 +                     u8 label_attr, u8 value_attr)
@@ -322,9 +433,7 @@ index 1effd802..a1eecf1a 100644
 +    if (len > 43)
 +        len = 43;
 +
-+    setup_clear_line(row);
-+    setup_puts(row, 1, "|");
-+    setup_puts(row, 78, "|");
++    setup_draw_frame_row(row, SETUP_ATTR_NORMAL);
 +    setup_puts_attr(row, SETUP_LABEL_COL, name, label_attr);
 +    setup_puts_attr(row, SETUP_VALUE_COL, "[", value_attr);
 +    for (i = 0; i < len; i++) {
@@ -762,6 +871,7 @@ index 1effd802..a1eecf1a 100644
 +    mxm->brightness = 100;
 +    mxm->vcore_code = 1;
 +    mxm->fb64 = 0;
++    mxm->vsa_blank_fix_en = 0;
 +}
 +
 +static void
@@ -822,6 +932,7 @@ index 1effd802..a1eecf1a 100644
 +        mxm->vcore_code = 1;
 +
 +    mxm->fb64 = mxm->m4800 ? ((packet[1] >> 3) & 1) : 0;
++    mxm->vsa_blank_fix_en = mxm->m4800 ? ((packet[1] >> 2) & 1) : 1;
 +    mxm->gpu_temp = packet[2];
 +    mxm->smc_temp = packet[3];
 +    mxm->fan_speed = packet[4];
@@ -853,7 +964,9 @@ index 1effd802..a1eecf1a 100644
 +    if (!mxm->present)
 +        return;
 +
-+    packet1 = (mxm->vcore_code << 4) | (mxm->m4800 && mxm->fb64 ? 0x08 : 0);
++    packet1 = (mxm->vcore_code << 4)
++        | (mxm->m4800 && mxm->fb64 ? 0x08 : 0)
++        | (mxm->m4800 && mxm->vsa_blank_fix_en ? 0x04 : 0);
 +    setup_3dfx_send_byte(mxm, mxm->brightness);
 +    setup_3dfx_send_byte(mxm, packet1);
 +}
@@ -864,6 +977,14 @@ index 1effd802..a1eecf1a 100644
 +    if (!mxm->m4800)
 +        return "16 MB";
 +    return mxm->fb64 ? "64 MB" : "32 MB";
++}
++
++static const char *
++setup_3dfx_vsa_blank_fix_name(const struct setup_3dfx_state *mxm)
++{
++    if (!mxm->m4800)
++        return "Enabled";
++    return mxm->vsa_blank_fix_en ? "Enabled" : "Disabled";
 +}
 +
 +static const char *
@@ -1024,12 +1145,12 @@ index 1effd802..a1eecf1a 100644
 +static void
 +setup_draw_tabs(int current_menu, int focus)
 +{
-+    setup_puts(3, 1, "|                                                                            |");
-+    setup_draw_menu_item(3, " Info ", SETUP_MENU_INFO, current_menu, focus);
-+    setup_draw_menu_item(12, " Main ", SETUP_MENU_MAIN, current_menu, focus);
-+    setup_draw_menu_item(22, " Advanced ", SETUP_MENU_ADVANCED, current_menu, focus);
-+    setup_draw_menu_item(38, " Boot ", SETUP_MENU_BOOT, current_menu, focus);
-+    setup_draw_menu_item(49, " 3dfx ", SETUP_MENU_3DFX, current_menu, focus);
++    setup_draw_frame_row(3, SETUP_ATTR_NORMAL);
++    setup_draw_menu_item(7, " Info ", SETUP_MENU_INFO, current_menu, focus);
++    setup_draw_menu_item(17, " Main ", SETUP_MENU_MAIN, current_menu, focus);
++    setup_draw_menu_item(27, " Advanced ", SETUP_MENU_ADVANCED, current_menu, focus);
++    setup_draw_menu_item(41, " Boot ", SETUP_MENU_BOOT, current_menu, focus);
++    setup_draw_menu_item(51, " 3dfx ", SETUP_MENU_3DFX, current_menu, focus);
 +    setup_draw_menu_item(61, " Save & Exit ", SETUP_MENU_SAVE_EXIT, current_menu, focus);
 +}
 +
@@ -1038,9 +1159,8 @@ index 1effd802..a1eecf1a 100644
 +{
 +    int row;
 +
-+    for (row = 5; row <= 21; row++)
-+        setup_puts_attr(row, 1, "|                                                                            |",
-+                        SETUP_ATTR_NORMAL);
++    for (row = 5; row <= 22; row++)
++        setup_draw_frame_row(row, SETUP_ATTR_NORMAL);
 +}
 +
 +static void
@@ -1052,9 +1172,9 @@ index 1effd802..a1eecf1a 100644
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
 +
 +    setup_clear_page();
-+    setup_draw_value_row(8, "Boot Order", setup_boot_order_name(boot->boot_order),
++    setup_draw_value_row(6, "Boot Order", setup_boot_order_name(boot->boot_order),
 +                         SETUP_ATTR_NORMAL, order_attr);
-+    setup_draw_value_row(9, "Boot Prompt Delay", setup_boot_delay_name(boot->boot_delay),
++    setup_draw_value_row(7, "Boot Prompt Delay", setup_boot_delay_name(boot->boot_delay),
 +                         SETUP_ATTR_NORMAL, delay_attr);
 +    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Save  ESC Reboot  Left/Right Change");
 +}
@@ -1062,9 +1182,7 @@ index 1effd802..a1eecf1a 100644
 +static void
 +setup_draw_action_row(u8 row, const char *name, int selected, int focus)
 +{
-+    setup_clear_line(row);
-+    setup_puts(row, 1, "|");
-+    setup_puts(row, 78, "|");
++    setup_draw_frame_row(row, SETUP_ATTR_NORMAL);
 +    setup_puts_attr(row, SETUP_LABEL_COL, name,
 +                    selected && focus == SETUP_FOCUS_PAGE
 +                    ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL);
@@ -1074,10 +1192,10 @@ index 1effd802..a1eecf1a 100644
 +setup_draw_save_exit_page(const struct setup_save_exit_state *save, int focus)
 +{
 +    setup_clear_page();
-+    setup_draw_action_row(8, "Save Changes and Reboot", save->selected == 0, focus);
-+    setup_draw_action_row(9, "Discard Changes and Reboot", save->selected == 1, focus);
-+    setup_draw_action_row(11, "Load Setup Defaults", save->selected == 2, focus);
-+    setup_draw_action_row(13, "Apply 3dfx Defaults and Reboot", save->selected == 3, focus);
++    setup_draw_action_row(6, "Save Changes and Reboot", save->selected == 0, focus);
++    setup_draw_action_row(7, "Discard Changes and Reboot", save->selected == 1, focus);
++    setup_draw_action_row(9, "Load Setup Defaults", save->selected == 2, focus);
++    setup_draw_action_row(11, "Apply 3dfx Defaults and Reboot", save->selected == 3, focus);
 +    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Select  ESC Reboot");
 +}
 +
@@ -1217,17 +1335,17 @@ index 1effd802..a1eecf1a 100644
 +setup_draw_main_page(const struct setup_datetime_state *dt, int focus)
 +{
 +    setup_clear_page();
-+    setup_draw_datetime_row(8, "System Hour", dt->hour, dt->selected == 0,
++    setup_draw_datetime_row(6, "System Hour", dt->hour, dt->selected == 0,
 +                            focus, 2);
-+    setup_draw_datetime_row(9, "System Minute", dt->min, dt->selected == 1,
++    setup_draw_datetime_row(7, "System Minute", dt->min, dt->selected == 1,
 +                            focus, 2);
-+    setup_draw_datetime_row(10, "System Second", dt->sec, dt->selected == 2,
++    setup_draw_datetime_row(8, "System Second", dt->sec, dt->selected == 2,
 +                            focus, 2);
-+    setup_draw_datetime_row(12, "System Month", dt->month, dt->selected == 3,
++    setup_draw_datetime_row(10, "System Month", dt->month, dt->selected == 3,
 +                            focus, 2);
-+    setup_draw_datetime_row(13, "System Day", dt->day, dt->selected == 4,
++    setup_draw_datetime_row(11, "System Day", dt->day, dt->selected == 4,
 +                            focus, 2);
-+    setup_draw_datetime_row(14, "System Year", dt->year, dt->selected == 5,
++    setup_draw_datetime_row(12, "System Year", dt->year, dt->selected == 5,
 +                            focus, 4);
 +    setup_footer("F1 Help  Tab Menu  F10 Save Time  ESC Reboot  Left/Right Change");
 +}
@@ -1245,17 +1363,17 @@ index 1effd802..a1eecf1a 100644
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
 +
 +    setup_clear_page();
-+    setup_draw_value_row(8, "SATA Mode", setup_sata_mode_name(adv->sata_mode),
++    setup_draw_value_row(6, "SATA Mode", setup_sata_mode_name(adv->sata_mode),
 +                         SETUP_ATTR_NORMAL, sata_attr);
-+    setup_draw_value_row(9, "HD Audio", setup_hda_name(adv->hda_disable),
++    setup_draw_value_row(7, "HD Audio", setup_hda_name(adv->hda_disable),
 +                         SETUP_ATTR_NORMAL, hda_attr);
-+    setup_draw_value_row(10, "CPU Turbo", setup_turbo_name(adv->turbo_disable),
++    setup_draw_value_row(8, "CPU Turbo", setup_turbo_name(adv->turbo_disable),
 +                         SETUP_ATTR_NORMAL, turbo_attr);
-+    setup_draw_value_row(11, "CPU Clock Cap", "Not implemented",
++    setup_draw_value_row(9, "CPU Clock Cap", "Not implemented",
 +                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
-+    setup_draw_value_row(12, "Hyperthreading", "Not implemented",
++    setup_draw_value_row(10, "Hyperthreading", "Not implemented",
 +                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
-+    setup_draw_value_row(13, "VGA Mux", setup_vga_mux_name(adv->vga_mux),
++    setup_draw_value_row(11, "VGA Mux", setup_vga_mux_name(adv->vga_mux),
 +                         SETUP_ATTR_NORMAL, vga_attr);
 +    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Save  ESC Reboot  Left/Right Change");
 +}
@@ -1278,6 +1396,10 @@ index 1effd802..a1eecf1a 100644
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
 +    u8 fb_attr = mxm->m4800
 +        ? (mxm->selected == 2 && focus == SETUP_FOCUS_PAGE
++           ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL)
++        : SETUP_ATTR_DISABLED;
++    u8 blank_fix_attr = mxm->m4800
++        ? (mxm->selected == 3 && focus == SETUP_FOCUS_PAGE
 +           ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL)
 +        : SETUP_ATTR_DISABLED;
 +
@@ -1304,15 +1426,17 @@ index 1effd802..a1eecf1a 100644
 +             (mxm->vcore_code + 25) % 10);
 +    setup_draw_3dfx_row(14, "Core Voltage", value, vcore_attr);
 +    setup_draw_3dfx_row(15, "Framebuffer Memory", setup_3dfx_fb_name(mxm), fb_attr);
++    setup_draw_3dfx_row(16, mxm->m4800 ? "VSA NT Blank Fix" : "Avenger Blank Fix",
++                         setup_3dfx_vsa_blank_fix_name(mxm), blank_fix_attr);
 +
 +    snprintf(value, sizeof(value), "%u C", mxm->gpu_temp);
-+    setup_draw_3dfx_row(17, "GPU Temperature", value, SETUP_ATTR_DISABLED);
++    setup_draw_3dfx_row(18, "GPU Temperature", value, SETUP_ATTR_DISABLED);
 +    snprintf(value, sizeof(value), "%u C", mxm->smc_temp);
-+    setup_draw_3dfx_row(18, "SMC Temperature", value, SETUP_ATTR_DISABLED);
++    setup_draw_3dfx_row(19, "SMC Temperature", value, SETUP_ATTR_DISABLED);
 +    snprintf(value, sizeof(value), "%u %%", mxm->fan_speed);
-+    setup_draw_3dfx_row(19, "Fan Speed", value, SETUP_ATTR_DISABLED);
++    setup_draw_3dfx_row(20, "Fan Speed", value, SETUP_ATTR_DISABLED);
 +    setup_3dfx_raw_name(mxm, value, sizeof(value));
-+    setup_draw_3dfx_row(20, "Raw Packet", value, SETUP_ATTR_DISABLED);
++    setup_draw_3dfx_row(21, "Raw Packet", value, SETUP_ATTR_DISABLED);
 +
 +    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Apply  ESC Reboot  Left/Right Change");
 +}
@@ -1354,6 +1478,112 @@ index 1effd802..a1eecf1a 100644
 +}
 +
 +static void
++setup_show_current_help(int menu, int focus,
++                        const struct setup_advanced_state *adv,
++                        const struct setup_boot_state *boot,
++                        const struct setup_datetime_state *dt,
++                        const struct setup_3dfx_state *mxm,
++                        const struct setup_save_exit_state *save)
++{
++    const char *title = "Setup Help";
++    const char *line1 = "Use Tab or Left/Right to change menus.";
++    const char *line2 = "Use Up/Down to select page items.";
++    const char *line3 = "F1 shows details for the selected item.";
++    const char *action = "";
++
++    if (focus == SETUP_FOCUS_PAGE) {
++        if (menu == SETUP_MENU_MAIN) {
++            title = "Date and Time";
++            line1 = "Adjusts the RTC value saved by the chipset.";
++            line2 = "Values are applied immediately after save.";
++            line3 = "";
++            action = "Press F10 on this page to save the new time.";
++        } else if (menu == SETUP_MENU_ADVANCED) {
++            if (adv->selected == 0) {
++                title = "SATA Mode";
++                line1 = "AHCI is recommended for NT-based Windows and Linux.";
++                line2 = "IDE native is recommended for Windows 98.";
++                line3 = "Avoid IDE native on XP for now; use AHCI or legacy.";
++                action = "Press F10 to save, then reboot.";
++            } else if (adv->selected == 1) {
++                title = "HD Audio";
++                line1 = "Enables or disables the onboard HDA controller.";
++                line2 = "";
++                line3 = "";
++                action = "Press F10 to save, then reboot.";
++            } else if (adv->selected == 2) {
++                title = "CPU Turbo";
++                line1 = "Controls whether turbo boost is allowed.";
++                line2 = "";
++                line3 = "";
++                action = "Press F10 to save, then reboot.";
++            } else {
++                title = "VGA Mux";
++                line1 = "Routes the external VGA output.";
++                line2 = "Connector selects laptop VGA; Dock selects dock VGA.";
++                line3 = "";
++                action = "Press F10 to save, then reboot.";
++            }
++        } else if (menu == SETUP_MENU_BOOT) {
++            if (boot->selected == 0) {
++                title = "Boot Order";
++                line1 = "Selects the default SeaBIOS boot priority.";
++                line2 = "The boot menu can still override this at startup.";
++                line3 = "";
++                action = "Press F10 to save.";
++            } else {
++                title = "Boot Prompt Delay";
++                line1 = "Controls how long SeaBIOS waits for hotkeys.";
++                line2 = "";
++                line3 = "";
++                action = "Press F10 to save.";
++            }
++        } else if (menu == SETUP_MENU_3DFX) {
++            if (!mxm->present) {
++                title = "3dfx MXM Card";
++                line1 = "No supported 3dfx MXM card was detected.";
++                line2 = "Card settings cannot be changed.";
++                line3 = "";
++            } else if (mxm->selected == 0) {
++                title = "Panel Backlight";
++                line1 = "Sets the MXM card panel backlight level.";
++                line2 = "This value is stored on the MXM card.";
++                line3 = "";
++                action = "Press F10 to apply to the card.";
++            } else if (mxm->selected == 1) {
++                title = "Core Voltage";
++                line1 = "Sets the MXM card GPU core voltage.";
++                line2 = "This value is stored on the MXM card.";
++                line3 = "If video fails, spam R at boot to reset settings.";
++                action = "Press F10 to apply to the card.";
++            } else if (mxm->selected == 2) {
++                title = "Framebuffer Memory";
++                line1 = "Selects 32 MB or 64 MB framebuffer on M4800.";
++                line2 = "This value is stored on the MXM card.";
++                line3 = "Do not use 64 MB with Windows 98.";
++                action = "Press F10 to apply, then reboot.";
++            } else {
++                title = mxm->m4800 ? "VSA NT Blank Fix" : "Avenger Blank Fix";
++                line1 = mxm->m4800 ? "Needed for NT OSes: VSA driver shifts the image"
++                                   : "Required for Avenger and always enabled.";
++                line2 = mxm->m4800 ? "right by 4 pixels; onboard FPGA compensates."
++                                   : "This value is not user-selectable.";
++                line3 = mxm->m4800 ? "This value is stored on the MXM card." : "";
++                action = mxm->m4800 ? "Press F10 to apply to the card." : "";
++            }
++        } else if (menu == SETUP_MENU_SAVE_EXIT) {
++            title = "Save and Exit";
++            line1 = "Select an action and press Enter or F10.";
++            line2 = "Saved setup changes take effect after reboot.";
++            line3 = "";
++        }
++    }
++
++    setup_help_popup(title, line1, line2, line3, action);
++    setup_draw_current_page(menu, focus, adv, boot, dt, mxm, save);
++}
++
++static void
 +show_setup_screen(void)
 +{
 +    struct bregs br;
@@ -1392,11 +1622,13 @@ index 1effd802..a1eecf1a 100644
 +    br.cx = 0x0000;
 +    br.dx = 0x184f;
 +    call16_int(0x10, &br);
++    setup_hide_cursor();
 +
 +    setup_puts_attr(1, 16, "Precision M4800 3dfx Edition - Setup Utility", SETUP_ATTR_TITLE);
-+    setup_puts(2, 1, "+----------------------------------------------------------------------------+");
-+    setup_puts(4, 1, "+----------------------------------------------------------------------------+");
-+    setup_puts(22, 1, "+----------------------------------------------------------------------------+");
++    setup_draw_box(2, 1, 23, 78, SETUP_ATTR_NORMAL);
++    setup_draw_hline(4, 2, 76, SETUP_ATTR_NORMAL);
++    setup_put_char_attr(4, 1, SETUP_BOX_LT, SETUP_ATTR_NORMAL);
++    setup_put_char_attr(4, 78, SETUP_BOX_RT, SETUP_ATTR_NORMAL);
 +    setup_draw_current_page(menu, focus, &adv, &boot, &dt, &mxm, &save);
 +    setup_puts(24, 0, "");
 +
@@ -1413,6 +1645,11 @@ index 1effd802..a1eecf1a 100644
 +        scan_code = key >> 8;
 +        if (scan_code == SETUP_KEY_ESC)
 +            setup_reboot();
++
++        if (scan_code == SETUP_KEY_F1) {
++            setup_show_current_help(menu, focus, &adv, &boot, &dt, &mxm, &save);
++            continue;
++        }
 +
 +        if (scan_code == SETUP_KEY_TAB) {
 +            focus = SETUP_FOCUS_MENU;
@@ -1627,7 +1864,7 @@ index 1effd802..a1eecf1a 100644
 +        }
 +
 +        if (scan_code == SETUP_KEY_UP || scan_code == SETUP_KEY_DOWN) {
-+            int max_selected = mxm.m4800 ? 2 : 1;
++            int max_selected = mxm.m4800 ? 3 : 1;
 +            if (scan_code == SETUP_KEY_UP && mxm.selected == 0) {
 +                focus = SETUP_FOCUS_MENU;
 +                setup_draw_current_page(menu, focus, &adv, &boot, &dt, &mxm, &save);
@@ -1659,6 +1896,8 @@ index 1effd802..a1eecf1a 100644
 +                    mxm.vcore_code--;
 +            } else if (mxm.present && mxm.m4800 && mxm.selected == 2) {
 +                mxm.fb64 = !mxm.fb64;
++            } else if (mxm.present && mxm.m4800 && mxm.selected == 3) {
++                mxm.vsa_blank_fix_en = !mxm.vsa_blank_fix_en;
 +            }
 +            setup_draw_3dfx_page(&mxm, focus);
 +            continue;
@@ -1684,15 +1923,24 @@ index 1effd802..a1eecf1a 100644
 +    }
 +}
 +
- // Show IPL option menu.
- void
- interactive_bootmenu(void)
-@@ -708,18 +2324,43 @@ interactive_bootmenu(void)
-         return;
-     }
- 
--    while (get_keystroke(0) >= 0)
--        ;
++// Show IPL option menu.
++void
++interactive_bootmenu(void)
++{
++    if (! CONFIG_BOOTMENU)
++        return;
++    int show_boot_menu = romfile_loadint("etc/show-boot-menu", 1);
++    if (!show_boot_menu)
++        return;
++
++    // skip menu if only one boot device and no TPM
++    if (show_boot_menu == 2 && !tpm_can_show_menu()
++        && !hlist_empty(&BootList) && !BootList.first->next) {
++        dprintf(1, "Only one boot device present. Skip boot menu.\n");
++        printf("\n");
++        return;
++    }
++
 +    for (;;) {
 +        int oldkey = get_keystroke_full(0);
 +
@@ -1704,19 +1952,16 @@ index 1effd802..a1eecf1a 100644
 +            return;
 +        }
 +    }
- 
-     char *bootmsg = romfile_loadfile("etc/boot-menu-message", NULL);
-     int menukey = romfile_loadint("etc/boot-menu-key", 1);
--    printf("%s", bootmsg ?: "\nPress ESC for boot menu.\n\n");
++
++    char *bootmsg = romfile_loadfile("etc/boot-menu-message", NULL);
++    int menukey = romfile_loadint("etc/boot-menu-key", 1);
 +    printf("%s", bootmsg ?: "\nPress ESC for boot menu, DEL for setup.\n\n");
-     free(bootmsg);
- 
--    u32 menutime = romfile_loadint("etc/boot-menu-wait", DEFAULT_BOOTMENU_WAIT);
++    free(bootmsg);
++
 +    u32 menutime = setup_boot_delay_ms();
-     enable_bootsplash();
--    int scan_code = get_keystroke(menutime);
++    enable_bootsplash();
 +    int keystroke = get_keystroke_full(menutime);
-     disable_bootsplash();
++    disable_bootsplash();
 +    if (keystroke < 0)
 +        return;
 +
@@ -1732,7 +1977,11 @@ index 1effd802..a1eecf1a 100644
 +        show_setup_screen();
 +        return;
 +    }
-+
+ 
+-    u32 menutime = romfile_loadint("etc/boot-menu-wait", DEFAULT_BOOTMENU_WAIT);
+-    enable_bootsplash();
+-    int scan_code = get_keystroke(menutime);
+-    disable_bootsplash();
      if (scan_code != menukey)
          return;
  
