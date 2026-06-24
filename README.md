@@ -1,199 +1,310 @@
-coreboot README
-===============
+# Precision M4800 3dfx Edition Firmware
 
-coreboot is a Free Software project aimed at replacing the proprietary
-firmware (BIOS/UEFI) found in most computers. coreboot performs the
-required hardware initialization to configure the system, then passes
-control to a different executable, referred to in coreboot as the
-payload. Most often, the primary function of the payload is to boot the
-operating system (OS).
+Custom coreboot and SeaBIOS firmware for the Dell Precision M4800 3dfx
+Edition project.
 
-With the separation of hardware initialization and later boot logic,
-coreboot is perfect for a wide variety of situations. It can be used
-for specialized applications that run directly in the firmware, running
-operating systems from flash, loading custom bootloaders, or
-implementing firmware standards, like PC BIOS services or UEFI. This
-flexibility allows coreboot systems to include only the features
-necessary in the target application, reducing the amount of code and
-flash space required.
+This firmware targets a standard Precision M4800 motherboard fitted with a
+custom 3dfx MXM graphics card in place of the usual NVIDIA or AMD adapter. No
+motherboard hardware modifications are required.
 
+The Precision M4800 provides both integrated- and discrete-GPU paths. This
+project deliberately disables the Intel integrated GPU very early during
+startup so the 3dfx MXM card can operate as the sole graphics adapter. Leaving
+the iGPU enabled as a secondary adapter reserves resources that cause problems
+under Windows 98.
 
-Source code
------------
+The firmware also adds legacy operating-system compatibility and provides a
+persistent BIOS-style setup utility for platform and graphics-card settings.
 
-All source code for coreboot is stored in git. It is downloaded with
-the command:
+This is a machine-specific project. It is not intended as a universal Dell
+Precision M4800 port or as an upstream-ready coreboot implementation. For a
+general M4800 coreboot port, see the unmerged upstream change
+[mb/dell: Add Dell Precision M4800 (Haswell)](https://review.coreboot.org/c/coreboot/+/79755).
 
-`git clone https://review.coreboot.org/coreboot.git`.
+## Hardware Target
 
-Code reviews are done in [the project's Gerrit
-instance](https://review.coreboot.org/).
+| Component | Target |
+| --- | --- |
+| System | Dell Precision M4800 |
+| CPU platform | Intel Haswell |
+| Chipset | Intel Lynx Point |
+| Embedded controller | Dell MEC5075 |
+| Primary graphics | 3dfx Voodoo4 M4800 or Voodoo3 M3800 MXM card, including LVDS and eDP variants |
+| Firmware payload | SeaBIOS |
+| Flash size | 12 MiB |
 
-The code may be browsed via [coreboot's Gitiles
-instance](https://review.coreboot.org/plugins/gitiles/coreboot/+/HEAD).
+The Intel integrated GPU is disabled and the MXM card is used as the primary
+display adapter.
 
-The coreboot project also maintains a
-[mirror](https://github.com/coreboot/coreboot) of the project on github.
-This is read-only, as coreboot does not accept github pull requests,
-but allows browsing and downloading the coreboot source.
+## Main Features
 
-Payloads
---------
+### Precision M4800 Board Port
 
-After the basic initialization of the hardware has been performed, any
-desired "payload" can be started by coreboot.
+- Dedicated `precision_m4800_3dfx` mainboard target.
+- ACPI tables derived and adapted for this machine-specific firmware.
+- VGA routing through the motherboard EC-controlled mux.
 
-See <https://doc.coreboot.org/payloads.html> for a list of some of
-coreboot's supported payloads.
+### Legacy Operating-System Support
 
+- Fixed ACPI PCI resource layout for legacy operating systems.
+- Legacy ACPI `Processor` objects for Windows XP SpeedStep compatibility.
+- SeaBIOS keyboard lock-LED handling for DOS and Windows 98.
+- Windows 98-oriented PCI IRQ routing.
+- Added Lynx Point SATA support for selectable AHCI, IDE native, and IDE
+  legacy modes.
 
-Supported Hardware
-------------------
+### Platform Controls
 
-The coreboot project supports a wide range of architectures, chipsets,
-devices, and mainboards. While not all of these are documented, you can
-find some information in the [Architecture-specific
-documentation](https://doc.coreboot.org/arch/index.html) or the
-[SOC-specific documentation](https://doc.coreboot.org/soc/index.html).
+- Configurable HDA controller state.
+- Configurable CPU Turbo state.
+- Configurable SATA mode and external VGA destination.
+- Configurable boot order and boot-prompt delay.
+- Editable RTC date and time.
 
-For details about the specific mainboard devices that coreboot supports,
-please consult the [Mainboard-specific
-documentation](https://doc.coreboot.org/mainboard/index.html) or the
-[Board Status](https://coreboot.org/status/board-status.html) pages.
+### SATA Modes
 
+| Mode | Intended use |
+| --- | --- |
+| AHCI | Recommended for NT-based Windows and Linux |
+| IDE native | Recommended for Windows 98 |
+| IDE legacy | Compatibility option using legacy IDE IRQ routing |
 
-Releases
---------
+IDE native currently causes an interrupt storm under Windows XP. AHCI is the
+recommended mode for XP.
 
-Releases are currently done by coreboot every quarter. The
-release archives contain the entire coreboot codebase from the time of
-the release, along with any external submodules. The submodules
-containing binaries are separated from the general release archives. All
-of the packages required to build the coreboot toolchains are also kept
-at coreboot.org in case the websites change, or those specific packages
-become unavailable in the future.
+## Project-Specific Changes
 
-All releases are available on the [coreboot
-download](https://coreboot.org/downloads.html) page.
+This section records the functional changes present on top of the base
+coreboot revision. It is intended as a reference when updating, debugging, or
+reimplementing the project.
 
-Please note that the coreboot releases are best considered as snapshots
-of the codebase, and do not currently guarantee any sort of extra
-stability.
+| Area | Implementation |
+| --- | --- |
+| Mainboard port | Adds the `precision_m4800_3dfx` target with machine-specific GPIO, USB, ACPI, CMOS, romstage, and devicetree configuration. |
+| Board ACPI | Provides machine-specific MEC EC, AC adapter, battery, power, platform, Super I/O, and OS-compatibility definitions. |
+| Graphics selection | Disables the Intel iGPU before MRC, removes the Haswell integrated graphics build path, and leaves the MXM adapter as the sole graphics device. |
+| PCI resources | Uses fixed ACPI PCI windows: non-prefetchable MMIO at `0xe0000000-0xefffffff` and prefetchable MMIO at `0xd8000000-0xdfffffff`, with fixed legacy I/O ranges. |
+| CPU power management | Emits legacy ACPI `Processor` objects so Windows XP can bind its SpeedStep drivers and use the generated performance states. |
+| SATA | Extends the Lynx Point SATA driver with AHCI, IDE native, and IDE legacy initialization selected from CMOS. |
+| Legacy IRQ routing | Routes IDE-native SATA away from the crowded legacy PCI links and separates HDA from the IRQ 15 group used by graphics and USB under Windows 98. The tested Windows 98 assignments are SATA on IRQ 3 and HDA on IRQ 6. |
+| Audio | Supplies Realtek ALC292 verbs, adds early HDA disable support, and sends the Dell EC speaker-unmute command required for working audio. |
+| Dell EC | Routes power-button events to the host OS and controls the dGPU VGA mux for either the laptop or docking-station connector. |
+| SeaBIOS keyboard | Updates Caps Lock, Num Lock, and Scroll Lock LEDs directly so they work under DOS, Windows 98, and Windows XP. |
+| SeaBIOS integration | Applies the project SeaBIOS patches automatically during the coreboot build and embeds the configurable boot-menu wait value. |
+| Setup utility | Adds persistent CMOS controls, RTC editing, boot selection, system information, contextual help, and direct M3800/M4800 information, telemetry, and card settings. |
+| Card recovery | Detects repeated `R` input at the SeaBIOS prompt, restores safe MXM-card defaults, and reboots. |
+| Platform devices | Configures the USB 2.0/3.0 port maps, TPM 1.2, docking, Ethernet, optical drive, and HDD/ODD/mSATA port map, with CMOS defaults for the wireless radios. |
+| Device policy | Disables the unused Intel ME interfaces, IDE-R, KT, secondary legacy SATA function, and PCH thermal device in the board devicetree. |
 
-Build Requirements and building coreboot
-----------------------------------------
+## Hardware Compatibility
 
-The coreboot build, associated utilities and payloads require many
-additional tools and packages to build. The actual coreboot binary is
-typically built using a coreboot-controlled toolchain to provide
-reproducibility across various platforms. It is also possible, though
-not recommended, to make it directly with your system toolchain.
-Operating systems and distributions come with an unknown variety of
-system tools and utilities installed. Because of this, it isn't
-reasonable to list all the required packages to do a build, but the
-documentation lists the requirements for a few different Linux
-distributions.
+The following table records configurations tested with this firmware.
 
-To see the list of tools and libraries, along with a list of
-instructions to get started building coreboot, go to the [Starting from
-scratch](https://doc.coreboot.org/tutorial/part1.html) tutorial page.
+| Hardware or function | Windows 98 | Windows XP | Linux |
+| :--- | :---: | :---: | :---: |
+| USB 2.0 | Confirmed | Confirmed | Confirmed |
+| USB 3.0 | X | Confirmed | Confirmed |
+| SATA HDD/SSD in AHCI mode | X | Confirmed | Confirmed |
+| SATA HDD/SSD in IDE native mode | Confirmed | Partial[^1] | Confirmed |
+| SATA HDD/SSD in IDE legacy mode | Confirmed | Confirmed | Confirmed |
+| SATA ODD | Confirmed | Confirmed | Confirmed |
+| mSATA | X | Confirmed[^2] | Confirmed[^2] |
+| HDA audio | Confirmed | Confirmed | Confirmed |
+| Ethernet | X | Confirmed | Confirmed |
+| Wi-Fi and Bluetooth | X | Confirmed | Confirmed |
+| SD card reader | X | Confirmed | Confirmed |
+| ExpressCard slot | Confirmed | Confirmed | Confirmed |
+| Internal keyboard and touchpad | Confirmed | Confirmed | Confirmed |
+| Keyboard lock LEDs | Confirmed | Confirmed | Confirmed |
+| RTC date and time | Confirmed | Confirmed | Confirmed |
+| ACPI | Confirmed | Confirmed | Confirmed |
+| AC adapter and battery state | Partial[^3] | Confirmed | Confirmed |
+| Voodoo3 M3800 variants | Confirmed | Confirmed | Confirmed |
+| Voodoo4 M4800 variants | Confirmed | Confirmed | Confirmed |
+| Laptop VGA output | Confirmed | Confirmed | Confirmed |
+| Laptop eSATA port | -[^6] | -[^6] | -[^6] |
+| Docking-station VGA output | Confirmed | Confirmed | Confirmed |
+| Docking-station USB 2.0 | Confirmed | Confirmed | Confirmed |
+| Docking-station USB 3.0 | X | Confirmed | Confirmed |
+| Docking-station PS/2 mouse | Confirmed | Confirmed | Confirmed |
+| Docking-station PS/2 keyboard | Confirmed | Confirmed | Confirmed |
+| Docking-station Ethernet | X | Confirmed | Confirmed |
+| Docking-station power button | Confirmed | Confirmed | Confirmed |
+| Docking-station DVI/DP | X | X | X |
+| Docking-station COM port | X | X | X |
+| Docking-station parallel port | X | X | X |
+| Docking-station audio jacks | - | - | - |
+| Docking-station eSATA | -[^6] | -[^6] | -[^6] |
+| DisplayPort and HDMI output | X | X | X |
+| Internal panel | Confirmed | Confirmed | Confirmed[^5] |
+| 1920x1080 internal panel | Confirmed[^4] | Confirmed[^4] | Confirmed[^5] |
+| S3 suspend/standby | X | X | X |
 
-That same page goes through how to use QEMU to boot the build and see
-the output.
+`-` means that support has not been confirmed for that operating system.
+`X` means that the hardware is unavailable in this configuration or is not
+supported by that operating system.
 
+[^1]: IDE native mode works under Windows XP but causes a severe interrupt
+      storm. AHCI is recommended instead.
+[^2]: mSATA works only when the SATA controller is configured in AHCI mode.
+[^3]: Windows 98 correctly detects AC or battery operation and reports
+      charging or discharging state, but the reported battery charge
+      percentage is incorrect.
+[^4]: On Voodoo4 M4800 cards, the 1920x1080 internal panel requires a registry
+      patch under Windows 98 and Windows XP due to a VSA-100 limitation. The
+      patch is not required for Voodoo3 M3800 cards.
+[^5]: The stock `xserver-xorg-video-tdfx` X11 driver programs the VSA PLLs
+      incorrectly and can drive the VCO outside its valid range at any
+      resolution. Linux testing uses a patched driver that corrects the PLL
+      programming.
+[^6]: eSATA likely works, but no eSATA device was available for testing.
 
-Website and Mailing List
-------------------------
+## Setup Utility
 
-Further details on the project, as well as links to documentation and
-more can be found on the coreboot website:
+Press **Delete** at the SeaBIOS boot prompt to open the
+**Precision M4800 3dfx Edition - Setup Utility**.
 
-  <https://www.coreboot.org>
+The setup utility contains:
 
-You can contact us directly on the coreboot mailing list:
+| Page | Functions |
+| --- | --- |
+| Info | System, CPU, memory, 3dfx card, VBIOS, coreboot, and SeaBIOS information |
+| Main | RTC date and time |
+| Advanced | SATA mode, HDA, CPU Turbo, and VGA mux routing |
+| Boot | Boot order and boot-prompt delay |
+| 3dfx | MXM card information, telemetry, and persistent card settings |
+| Save & Exit | Save, discard, restore defaults, or reset the MXM card settings |
 
-  <https://doc.coreboot.org/community/forums.html>
+Platform settings are stored in CMOS and applied by coreboot on the next
+boot.
 
+### 3dfx MXM Control
 
+The setup utility communicates with supported cards through GPIOs on the
+Texas Instruments XIO2001 PCIe-to-PCI bridge.
 
-Copyrights and Licenses
----------------------
+Supported card families:
 
+- M4800: Voodoo4 / Napalm x1
+- M3800: Voodoo3 / Avenger
 
-### Uncopyrightable files
+Displayed information includes:
 
-There are many files in the coreboot tree that we feel are not
-copyrightable due to a lack of creative content.
+- Card model, revision, and display type
+- GPU model and framebuffer size
+- VBIOS revision
+- PCI bus speed
+- GPU and SMC temperatures
+- Fan speed
 
-"In order to qualify for copyright protection in the United States, a
-work must satisfy the originality requirement, which has two parts. The
-work must have “at least a modicum” of creativity, and it must be the
-independent creation of its author."
+Configurable card settings include:
 
-  <https://guides.lib.umich.edu/copyrightbasics/copyrightability>
+- Panel backlight
+- VSA-100 core voltage
+- Framebuffer size on M4800 cards
+- VSA NT blank fix on M4800 cards
 
-Similar terms apply to other locations.
+These values are stored on the MXM card rather than in laptop CMOS.
 
-These uncopyrightable files include:
+## VGA Routing
 
-- Empty files or files with only a comment explaining their existence.
-  These may be required to exist as part of the build process but are
-  not needed for the particular project.
-- Configuration files either in binary or text form. Examples would be
-  files such as .vbt files describing graphics configuration, .apcb
-  files containing configuration parameters for AMD firmware binaries,
-  and spd files as binary .spd or text \*spd\*.hex representing memory
-  chip configuration.
-- Machine-generated files containing version numbers, dates, hash
-  values or other "non-creative" content.
+The external analog VGA output can be routed to:
 
-As non-creative content, these files are in the public domain by
-default.  As such, the coreboot project excludes them from the project's
-general license even though they may be included in a final binary.
+- The laptop VGA connector
+- The docking-station VGA connector
 
-If there are questions or concerns about this policy, please get in
-touch with the coreboot project via the mailing list.
+The routing is controlled through the Dell EC. The integrated-GPU route is
+not used by this project.
 
+## Boot Behavior
 
-### Copyrights
+- **Escape** opens the SeaBIOS boot menu.
+- **Delete** opens the setup utility.
+- Repeatedly pressing **R** at the boot prompt resets the 3dfx MXM card to
+  safe defaults and reboots. This can recover from card settings that prevent
+  video output.
+- The boot-prompt delay is configurable from 1 to 10 seconds.
+- Boot priority can prefer HDD, optical drive, USB, or a coreboot payload.
 
-The copyright on coreboot is owned by quite a large number of individual
-developers and companies. A list of companies and individuals with known
-copyright claims is present at the top level of the coreboot source tree
-in the 'AUTHORS' file. Please check the git history of each of the
-source files for details.
+## Known Limitations
 
+- mSATA works in AHCI mode but not currently in either IDE mode.
+- S3 suspend/standby is not supported.
+- IDE native mode causes an IRQ storm under Windows XP.
 
-### Licenses
+## Building
 
-Because of the way coreboot began, using a significant amount of source
-code from the Linux kernel, it's licensed the same way as the Linux
-Kernel, with GNU General Public License (GPL) Version 2. Individual
-files are licensed under various licenses, though all are compatible
-with GPLv2. The resulting coreboot image is licensed under the GPL,
-version 2. All source files should have an SPDX license identifier at
-the top for clarification.
+Initialize the coreboot submodules:
 
-Files under coreboot/Documentation/ are licensed under CC-BY 4.0 terms.
-As an exception, files under Documentation/ with a history older than
-2017-05-24 might be under different licenses.
+```sh
+git submodule update --init --checkout
+```
 
-Files in the coreboot/src/commonlib/bsd directory are all licensed with
-the BSD-3-clause license.  Many are also dual-licensed GPL-2.0-only or
-GPL-2.0-or-later.  These files are intended to be shared with libpayload
-or other BSD licensed projects.
+Configure coreboot:
 
-The libpayload project contained in coreboot/payloads/libpayload may be
-licensed as BSD or GPL, depending on the code pulled in during the build
-process. All GPL source code should be excluded unless the Kconfig
-option to include it is set.
+```sh
+make menuconfig
+```
 
+Select:
 
-The Software Freedom Conservancy
---------------------------------
+```text
+Mainboard vendor: Dell
+Mainboard model: Precision M4800 3dfx Edition
+Payload: SeaBIOS
+```
 
-Since 2017, coreboot has been a member of [The Software Freedom
-Conservancy](https://sfconservancy.org/), a nonprofit organization
-devoted to ethical technology and driving initiatives to make technology
-more inclusive. The conservancy acts as coreboot's fiscal sponsor and
-legal advisor.
+Then build:
+
+```sh
+make
+```
+
+The resulting firmware image is:
+
+```text
+build/coreboot.rom
+```
+
+The SeaBIOS source is checked out during the build and the project patches in
+`payloads/external/SeaBIOS/patches/` are applied automatically.
+
+## Flashing Warning
+
+Flashing firmware can render the laptop unbootable. Keep a known-good image
+and an external SPI programmer available. Verify the flash layout and preserve
+machine-specific regions such as the Intel Flash Descriptor, Management
+Engine, and GbE data as required by the target system.
+
+## Project History
+
+This branch is based on coreboot commit:
+
+```text
+e5af2c6585 soc/intel/pantherlake: Remove implicit VBOOT_MUST_REQUEST_DISPLAY selection
+```
+
+The project branch is `m4800_3dfx`.
+
+Two Dell MEC5035 changes were imported from coreboot Gerrit:
+
+- [Route the power-button event to the host](https://review.coreboot.org/c/coreboot/+/84878)
+- [Add the command required to unmute speakers](https://review.coreboot.org/c/coreboot/+/91120)
+
+## Upstream Project
+
+This repository is a fork of [coreboot](https://www.coreboot.org/), the open
+source firmware project.
+
+Upstream source and documentation:
+
+- <https://review.coreboot.org/coreboot.git>
+- <https://doc.coreboot.org/>
+- <https://github.com/coreboot/coreboot>
+
+## Licensing
+
+coreboot is primarily licensed under the GNU General Public License version 2.
+Individual files may use other compatible licenses and carry their own SPDX
+identifiers. See `COPYING`, `AUTHORS`, and the headers of individual source
+files for details.
