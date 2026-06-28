@@ -193,6 +193,14 @@ void pch_enable(struct device *dev)
 		/* Disable this device if possible */
 		pch_disable_devfn(dev);
 	} else {
+		if (dev->path.pci.devfn == PCI_DEVFN(31, 5)) {
+			struct device *sata = pcidev_on_root(0x1f, 2);
+
+			RCBA32_AND_OR(FD, ~PCH_DISABLE_SATA2, 0);
+			if (sata)
+				pci_or_config16(sata, SATA_PCS, 1 << 9);
+		}
+
 		/* Enable SERR */
 		pci_or_config16(dev, PCI_COMMAND, PCI_COMMAND_SERR);
 	}

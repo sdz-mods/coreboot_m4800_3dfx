@@ -58,7 +58,7 @@ chip northbridge/intel/haswell
 			end
 			device pci 1f.2 on end # SATA Controller
 			device pci 1f.3 on end # SMBus
-			device pci 1f.5 off end # SATA Controller (Legacy)
+			device pci 1f.5 on end # SATA Controller 2 (IDE mode)
 			device pci 1f.6 off end # Thermal
 		end
 	end

@@ -25,6 +25,8 @@
 #define SATA_MAP_AHCI		0x0060
 #define SATA_MAP_IDE		0x0000
 #define SATA_PROGIF_NATIVE	0x05
+#define SATA_PROGIF_IDE2	0x85
+#define SATA_PCS_ENABLE_IDE2	(1 << 9)
 
 static uint8_t get_sata_mode(const struct southbridge_intel_lynxpoint_config *config)
 {
@@ -34,6 +36,11 @@ static uint8_t get_sata_mode(const struct southbridge_intel_lynxpoint_config *co
 		sata_mode = config->sata_mode;
 
 	return sata_mode;
+}
+
+static bool is_sata2(const struct device *dev)
+{
+	return dev->path.pci.devfn == PCI_DEVFN(0x1f, 5);
 }
 
 static inline u32 sir_read(struct device *dev, int idx)
@@ -74,8 +81,14 @@ static void sata_init(struct device *dev)
 
 	const uint8_t sata_mode = get_sata_mode(config);
 	const bool ahci_mode = sata_mode == SATA_MODE_AHCI;
+	const bool sata2 = is_sata2(dev);
 
 	/* SATA configuration */
+
+	if (sata2 && sata_mode != SATA_MODE_IDE_NATIVE) {
+		printk(BIOS_DEBUG, "SATA2: Hidden outside IDE native mode.\n");
+		return;
+	}
 
 	if (ahci_mode) {
 		/* Enable memory space decoding for ABAR */
@@ -83,9 +96,16 @@ static void sata_init(struct device *dev)
 
 		printk(BIOS_DEBUG, "SATA: Controller in AHCI mode.\n");
 	} else {
-		pci_write_config16(dev, PCI_COMMAND, PCI_COMMAND_MASTER | PCI_COMMAND_IO);
+		u16 command = PCI_COMMAND_MASTER | PCI_COMMAND_IO;
 
-		if (sata_mode == SATA_MODE_IDE_NATIVE) {
+		if (!sata2)
+			command |= PCI_COMMAND_MEMORY;
+		pci_write_config16(dev, PCI_COMMAND, command);
+
+		if (sata2) {
+			pci_write_config8(dev, PCI_CLASS_PROG, SATA_PROGIF_IDE2);
+			printk(BIOS_DEBUG, "SATA2: Controller in IDE native mode.\n");
+		} else if (sata_mode == SATA_MODE_IDE_NATIVE) {
 			pci_or_config8(dev, PCI_CLASS_PROG, SATA_PROGIF_NATIVE);
 			printk(BIOS_DEBUG, "SATA: Controller in IDE native mode.\n");
 		} else {
@@ -107,7 +127,9 @@ static void sata_init(struct device *dev)
 	pci_write_config16(dev, IDE_TIM_SEC, IDE_DECODE_ENABLE);
 
 	/* for AHCI, Port Enable is managed in memory mapped space */
-	pci_update_config16(dev, 0x92, ~SATA_PORT_MASK, 0x8000 | config->sata_port_map);
+	pci_update_config16(dev, 0x92, ~SATA_PORT_MASK,
+			    (ahci_mode ? 0 : SATA_PCS_ENABLE_IDE2) |
+			    0x8000 | (sata2 ? 0x03 : config->sata_port_map));
 	udelay(2);
 
 	/* Setup register 98h */
@@ -129,11 +151,11 @@ static void sata_init(struct device *dev)
 	pci_write_config32(dev, 0x98, reg32);
 
 	/* Setup register 9Ch: Disable alternate ID and BWG step 12 */
-	pci_write_config16(dev, 0x9c, 1 << 5);
+	pci_write_config32(dev, 0x9c, ahci_mode ? (1 << 5) : ((1 << 31) | (1 << 5)));
 
 	/* SATA Initialization register */
 	reg32 = 0x183;
-	reg32 |= (config->sata_port_map ^ SATA_PORT_MASK) << 24;
+	reg32 |= ((sata2 ? 0x03 : config->sata_port_map) ^ SATA_PORT_MASK) << 24;
 	reg32 |= (config->sata_devslp_mux & 1) << 15;
 	pci_write_config32(dev, 0x94, reg32);
 
@@ -241,6 +263,8 @@ skip_ahci:
 static void sata_enable(struct device *dev)
 {
 	u16 sata_mode;
+	uint8_t mode;
+	bool sata2;
 
 	/* Get the chip configuration */
 	struct southbridge_intel_lynxpoint_config *config = dev->chip_info;
@@ -252,12 +276,30 @@ static void sata_enable(struct device *dev)
 	 * Set SATA controller mode early so the resource allocator can
 	 * properly assign resources for the controller.
 	 */
-	if (get_sata_mode(config) == SATA_MODE_AHCI)
+	mode = get_sata_mode(config);
+	sata2 = is_sata2(dev);
+
+	if (sata2 && mode != SATA_MODE_IDE_NATIVE) {
+		pci_and_config16(dev, PCI_COMMAND,
+				 ~(PCI_COMMAND_MASTER | PCI_COMMAND_MEMORY | PCI_COMMAND_IO));
+		pch_disable_devfn(dev);
+		return;
+	}
+
+	if (mode == SATA_MODE_AHCI)
 		sata_mode = SATA_MAP_AHCI;
 	else
 		sata_mode = SATA_MAP_IDE;
 
-	pci_write_config16(dev, 0x90, sata_mode | (config->sata_port_map ^ SATA_PORT_MASK) << 8);
+	pci_write_config16(dev, 0x90,
+			   sata_mode | ((sata2 ? 0x03 : config->sata_port_map) ^ SATA_PORT_MASK) << 8);
+
+	if (!sata2 && mode == SATA_MODE_IDE_NATIVE)
+		pci_update_config16(dev, 0x92, ~SATA_PORT_MASK,
+				    SATA_PCS_ENABLE_IDE2 | 0x8000 | config->sata_port_map);
+
+	if (!sata2 && mode == SATA_MODE_IDE_NATIVE)
+		pci_write_config32(dev, 0x9c, (1 << 31) | (1 << 5));
 }
 
 static struct device_operations sata_ops = {

@@ -1,10 +1,17 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
 #include <northbridge/intel/haswell/raminit.h>
+#include <device/pci_def.h>
+#include <device/pci_ids.h>
+#include <device/pci_ops.h>
 #include <southbridge/intel/lynxpoint/pch.h>
 
 void mainboard_config_rcba(void)
 {
+	RCBA32_AND_OR(FD, ~PCH_DISABLE_SATA2, 0);
+	if (pci_read_config16(PCH_SATA_DEV, PCI_DEVICE_ID) == PCI_DID_INTEL_LPT_H_MOBILE_SATA_IDE)
+		pci_or_config16(PCH_SATA_DEV, SATA_PCS, 1 << 9);
+
 	RCBA32(D27IP) = INTA << D27IP_ZIP;
 	RCBA16(D27IR) = DIR_ROUTE(PIRQE, PIRQF, PIRQG, PIRQH);
 }
