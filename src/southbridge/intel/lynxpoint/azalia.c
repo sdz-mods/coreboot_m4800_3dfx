@@ -14,9 +14,10 @@
 static void azalia_route_irq(struct device *dev)
 {
 	RCBA32(D27IP) = INTA << D27IP_ZIP;
-	RCBA16(D27IR) = DIR_ROUTE(PIRQE, PIRQF, PIRQG, PIRQH);
-	pci_write_config8(dev, PCI_INTERRUPT_LINE, 0x04);
-	pci_write_config8(pcidev_on_root(0x1f, 0), PIRQE_ROUT, 0x04);
+	RCBA16(D27IR) = DIR_ROUTE(PIRQG, PIRQF, PIRQG, PIRQH);
+	pci_write_config8(dev, PCI_INTERRUPT_LINE, 0x07);
+	/* Route enabled at boot, IRQ 7 for DOS sound; see pch_pirq_route */
+	pci_write_config8(pcidev_on_root(0x1f, 0), PIRQG_ROUT, 0x07);
 }
 
 static void azalia_pch_init(struct device *dev, u8 *base)

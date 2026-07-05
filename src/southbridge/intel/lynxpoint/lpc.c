@@ -96,46 +96,98 @@ static void enable_hpet(struct device *const dev)
  * 0x80 - The PIRQ is not routed.
  */
 
+/*
+ * PIRQ routing as programmed by the Dell OEM firmware. Bit 7 leaves the
+ * PIRQ-to-8259 route disabled until an ACPI OS enables a LNKx link device;
+ * the low nibble is the legacy IRQ the link is expected to use. The same
+ * nibble is reported in each device's PCI_INTERRUPT_LINE register so that
+ * DOS and Win9x-era consumers see one coherent story.
+ */
+static const u8 pch_pirq_route[PIRQ_COUNT] = {
+	0x8b, 0x8a, 0x8a, 0x8a,	/* PIRQA-D: IRQ 11, 10, 10, 10 */
+	0x83, 0x8a, 0x07, 0x80,	/* PIRQE-H: IRQ 3, 10, 7, none */
+};
+/*
+ * No PIRQ hints IRQ 5: it is reserved for DOS Sound Blaster emulation,
+ * which owns it exclusively.
+ */
+/*
+ * PIRQG (HDA) deviates from OEM: it is routed with bit 7 clear, i.e.
+ * enabled at boot, so DOS sound drivers receive HDA interrupts without
+ * programming the PIRQ router themselves, and it targets IRQ 7;
+ * ACPI OSes redirect or disable the link as they see fit.
+ */
+/*
+ * Deviation from OEM: Dell routes PIRQF (EHCI #1) to IRQ 5, sharing it
+ * with the SATA controller (PIRQD). PIRQF is parked on IRQ 10 with the
+ * idle SMBus instead so the disk controller owns IRQ 5 exclusively in
+ * IDE native mode, which legacy OSes are happier with.
+ */
+
+static enum pirq pch_map_device_pirq(const struct device *dev, u8 int_pin)
+{
+	const struct device *d = dev;
+
+	/*
+	 * Swizzle the pin of a device behind a bridge up to the root bus:
+	 * the classic slot swizzle at each conventional hop, plus the
+	 * function swizzle at PCH root ports / PEG, matching the routes
+	 * observed on the OEM firmware.
+	 */
+	while (d->upstream && d->upstream->dev &&
+	       d->upstream->dev->path.type == DEVICE_PATH_PCI) {
+		const struct device *bridge = d->upstream->dev;
+
+		int_pin = (int_pin - PCI_INT_A + PCI_SLOT(d->path.pci.devfn)) % 4 + PCI_INT_A;
+		if (!(bridge->upstream && bridge->upstream->dev &&
+		      bridge->upstream->dev->path.type == DEVICE_PATH_PCI))
+			int_pin = (int_pin - PCI_INT_A + PCI_FUNC(bridge->path.pci.devfn)) % 4
+				  + PCI_INT_A;
+		d = bridge;
+	}
+
+	return intel_rcba_route_pirq(PCI_SLOT(d->path.pci.devfn), int_pin);
+}
+
 static void pch_pirq_init(struct device *dev)
 {
 	struct device *irq_dev;
 
-	const uint8_t pirq = 0x80;
+	pci_write_config8(dev, PIRQA_ROUT, pch_pirq_route[0]);
+	pci_write_config8(dev, PIRQB_ROUT, pch_pirq_route[1]);
+	pci_write_config8(dev, PIRQC_ROUT, pch_pirq_route[2]);
+	pci_write_config8(dev, PIRQD_ROUT, pch_pirq_route[3]);
 
-	pci_write_config8(dev, PIRQA_ROUT, pirq);
-	pci_write_config8(dev, PIRQB_ROUT, pirq);
-	pci_write_config8(dev, PIRQC_ROUT, pirq);
-	pci_write_config8(dev, PIRQD_ROUT, pirq);
+	pci_write_config8(dev, PIRQE_ROUT, pch_pirq_route[4]);
+	pci_write_config8(dev, PIRQF_ROUT, pch_pirq_route[5]);
+	pci_write_config8(dev, PIRQG_ROUT, pch_pirq_route[6]);
+	pci_write_config8(dev, PIRQH_ROUT, pch_pirq_route[7]);
 
-	pci_write_config8(dev, PIRQE_ROUT, pirq);
-	pci_write_config8(dev, PIRQF_ROUT, pirq);
-	pci_write_config8(dev, PIRQG_ROUT, pirq);
-	pci_write_config8(dev, PIRQH_ROUT, pirq);
-
-	/* Eric Biederman once said we should let the OS do this.
-	 * I am not so sure anymore he was right.
+	/*
+	 * Give every device the legacy IRQ hint matching its PIRQ route,
+	 * like the OEM firmware does. APIC OSes ignore this byte, but DOS
+	 * and Win9x-era code trusts PCI_INTERRUPT_LINE.
 	 */
-
 	for (irq_dev = all_devices; irq_dev; irq_dev = irq_dev->next) {
 		u8 int_pin = 0, int_line = 0;
+		enum pirq pirq;
 
 		if (!is_enabled_pci(irq_dev))
 			continue;
 
 		int_pin = pci_read_config8(irq_dev, PCI_INTERRUPT_PIN);
+		if (int_pin < PCI_INT_A || int_pin > PCI_INT_D)
+			continue;
 
-		switch (int_pin) {
-		case 1: /* INTA# */
-		case 2: /* INTB# */
-		case 3: /* INTC# */
-		case 4: /* INTD# */
-			int_line = pirq;
-			break;
-		}
+		pirq = pch_map_device_pirq(irq_dev, int_pin);
+		if (pirq != PIRQ_INVALID)
+			int_line = pch_pirq_route[pirq_idx(pirq)] & 0x0f;
 
 		if (!int_line)
 			continue;
 
+		printk(BIOS_SPEW, "PIRQ: %s pin INT%c -> IRQ %d\n",
+		       dev_path(irq_dev), 'A' + int_pin - PCI_INT_A, int_line);
 		pci_write_config8(irq_dev, PCI_INTERRUPT_LINE, int_line);
 	}
 }
@@ -603,6 +655,14 @@ static void lpc_init(struct device *dev)
 
 	/* Interrupt 9 should be level triggered (SCI) */
 	i8259_configure_irq_trigger(9, 1);
+
+	/*
+	 * Note: no ELCR level presets for the PIRQ-routable IRQs here.
+	 * PIC-mode Windows programs the ELCR itself when it steers the
+	 * links, and DOS sound stacks (SBEMU/HDPMI/JemmEx) read the ELCR
+	 * at init and misbehave when level bits are preset (at least
+	 * on the M4800 in this config).
+	 */
 
 	pch_set_acpi_mode();
 
