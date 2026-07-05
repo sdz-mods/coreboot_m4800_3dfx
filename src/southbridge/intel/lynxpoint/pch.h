@@ -52,7 +52,14 @@
 #define DEFAULT_GPIOSIZE	0x400
 #else
 #define DEFAULT_PMBASE		0x500
-#define DEFAULT_GPIOBASE	0x480
+/*
+ * Do not place the GPIO I/O window at the traditional 0x480: it covers
+ * 0x480-0x4ff, shadowing the ISA DMA high page registers (0x480-0x48f)
+ * and the 8259 ELCR trigger-mode registers (0x4d0-0x4d1), which breaks
+ * level-triggered PCI interrupts for PIC-mode (legacy) OSes. Use the
+ * same location as Dell OEM firmware.
+ */
+#define DEFAULT_GPIOBASE	0x1c00
 #define DEFAULT_GPIOSIZE	0x80
 #endif
 
