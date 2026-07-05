@@ -1,5 +1,5 @@
 diff --git a/src/boot.c b/src/boot.c
-index 1effd802..fd21c4a4 100644
+index 1effd802..1d19b943 100644
 --- a/src/boot.c
 +++ b/src/boot.c
 @@ -8,9 +8,12 @@
@@ -124,7 +124,7 @@ index 1effd802..fd21c4a4 100644
 +#define SETUP_CMOS_VGA_MUX	52
 +#define SETUP_CMOS_SATA2	52
 +#define SETUP_CMOS_BOOT_DELAY	53
-+#define SETUP_CMOS_CSUM_START	49
++#define SETUP_CMOS_CSUM_START	51
 +#define SETUP_CMOS_CSUM_END	55
 +#define SETUP_CMOS_CSUM_HIGH	123
 +#define SETUP_CMOS_CSUM_LOW	124

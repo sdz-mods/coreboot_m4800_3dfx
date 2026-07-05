@@ -12,10 +12,16 @@ entries
 388	4	h	0	reboot_counter
 
 # -----------------------------------------------------------------
-# coreboot config options: console
-395	4	e	6	debug_level
+# Bytes 49-50 (bits 392-407) must stay outside the checksummed range:
+# byte 50 is the legacy CMOS century location (offset 0x32), which
+# legacy OSes write directly on RTC updates regardless of the FADT.
+# A checksummed option there would be invalidated by every such write,
+# resetting all setup options to defaults on the next boot.
+#392	8	r	0	unused
+#400	8	r	0	century byte, written by legacy OSes
 
-#400	8	r	0	reserved for century byte
+# coreboot config options: console
+432	4	e	6	debug_level
 
 # coreboot config options: EC
 412	1	e	1	bluetooth
@@ -89,4 +95,4 @@ enumerations
 # -----------------------------------------------------------------
 checksums
 
-checksum 392 447 984
+checksum 408 447 984
