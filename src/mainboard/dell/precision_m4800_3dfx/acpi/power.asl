@@ -364,12 +364,10 @@ Mutex (ECM1, 0x01)
             })
             Method (_STA, 0, NotSerialized)  // _STA: Status
             {
-                Local0 = EEAC (0x05, Zero)
-                If ((Local0 < 0x02))
-                {
-                    Return (Zero)
-                }
-
+                /* Battery presence comes from the EC directly; the OEM
+                   firmware also queried its SMM mailbox for the number of
+                   supported batteries, which this firmware does not
+                   implement. */
                 Local0 = ECG5 ()
                 Local0 &= 0x08
                 If (Local0)
@@ -404,13 +402,7 @@ Mutex (ECM1, 0x01)
                 _SB
             })
             Method (_STA, 0, NotSerialized)  // _STA: Status
-         {
-                Local0 = EEAC (0x05, Zero)
-                If ((Local0 < 0x03))
-                {
-                    Return (Zero)
-                }
-
+            {
                 Local0 = ECG5 ()
                 Local0 &= 0x20
                 If (Local0)

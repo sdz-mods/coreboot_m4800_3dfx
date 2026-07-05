@@ -168,7 +168,17 @@
 
             Method (ECR1, 1, NotSerialized)
             {
-                If ((ECRD == Zero))
+                /*
+                 * Do not touch the EC region before the OS announces its
+                 * region handler via _REG(3, 1) - except on Windows 98
+                 * (recognizable by its missing _OSI), which never
+                 * evaluates _REG and services EC accesses from the start.
+                 * The fallback is the OEM firmware's SMI mailbox, not
+                 * implemented here, so it returns garbage; modern OSes
+                 * only hit it before their EC driver binds, where the
+                 * result is ignored.
+                 */
+                If (((ECRD == Zero) && CondRefOf (\_OSI)))
                 {
                     Local0 = EISC (0x80, Arg0, Zero)
                     Return (Local0)
@@ -436,7 +446,8 @@
 
             Method (ECW1, 2, NotSerialized)
             {
-                If ((ECRD == Zero))
+                /* Same Windows 98 exception as in ECR1 */
+                If (((ECRD == Zero) && CondRefOf (\_OSI)))
                 {
                     EISC (0x81, Arg0, Arg1)
                     Return (Zero)

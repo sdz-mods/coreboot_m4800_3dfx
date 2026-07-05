@@ -125,11 +125,11 @@ The following table records configurations tested with this firmware.
 | Keyboard lock LEDs | Confirmed | Confirmed | Confirmed |
 | RTC date and time | Confirmed | Confirmed | Confirmed |
 | ACPI | Confirmed | Confirmed | Confirmed |
-| AC adapter and battery state | Partial[^2] | Confirmed | Confirmed |
+| AC adapter and battery state | Confirmed | Confirmed | Confirmed |
 | Voodoo3 M3800 variants | Confirmed | Confirmed | Confirmed |
 | Voodoo4 M4800 variants | Confirmed | Confirmed | Confirmed |
 | Laptop VGA output | Confirmed | Confirmed | Confirmed |
-| Laptop eSATA port | -[^5] | -[^5] | -[^5] |
+| Laptop eSATA port | -[^4] | -[^4] | -[^4] |
 | Docking-station VGA output | Confirmed | Confirmed | Confirmed |
 | Docking-station USB 2.0 | Confirmed | Confirmed | Confirmed |
 | Docking-station USB 3.0 | X | Confirmed | Confirmed |
@@ -141,10 +141,10 @@ The following table records configurations tested with this firmware.
 | Docking-station COM port | X | X | X |
 | Docking-station parallel port | X | X | X |
 | Docking-station audio jacks | - | - | - |
-| Docking-station eSATA | -[^5] | -[^5] | -[^5] |
+| Docking-station eSATA | -[^4] | -[^4] | -[^4] |
 | DisplayPort and HDMI output | X | X | X |
-| Internal panel | Confirmed | Confirmed | Confirmed[^4] |
-| 1920x1080 internal panel | Confirmed[^3] | Confirmed[^3] | Confirmed[^4] |
+| Internal panel | Confirmed | Confirmed | Confirmed[^3] |
+| 1920x1080 internal panel | Confirmed[^2] | Confirmed[^2] | Confirmed[^3] |
 | S3 suspend/standby | X | X | X |
 
 `-` means that support has not been confirmed for that operating system.
@@ -154,17 +154,14 @@ supported by that operating system.
 [^1]: mSATA works in AHCI mode and, through the second SATA controller, in
       IDE native mode. In IDE native mode it can be hidden with the mSATA
       Controller setup option.
-[^2]: Windows 98 correctly detects AC or battery operation and reports
-      charging or discharging state, but the reported battery charge
-      percentage is incorrect.
-[^3]: On Voodoo4 M4800 cards, the 1920x1080 internal panel requires a registry
+[^2]: On Voodoo4 M4800 cards, the 1920x1080 internal panel requires a registry
       patch under Windows 98 and Windows XP due to a VSA-100 limitation. The
       patch is not required for Voodoo3 M3800 cards.
-[^4]: The stock `xserver-xorg-video-tdfx` X11 driver programs the VSA PLLs
+[^3]: The stock `xserver-xorg-video-tdfx` X11 driver programs the VSA PLLs
       incorrectly and can drive the VCO outside its valid range at any
       resolution. Linux testing uses a patched driver that corrects the PLL
       programming.
-[^5]: eSATA likely works, but no eSATA device was available for testing.
+[^4]: eSATA likely works, but no eSATA device was available for testing.
 
 ## Setup Utility
 
