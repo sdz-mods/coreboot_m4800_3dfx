@@ -54,30 +54,20 @@ Scope(\_SB) {
 	 *     EFIGetMemoryMap as reserved memory but must always be reported through
 	 *     ACPI as a motherboard resource.
 	 */
+	/*
+	 * A static Memory32Fixed descriptor rather than the upstream
+	 * QWordMemory method: QWord descriptors are ACPI 2.0 and make
+	 * Windows 98's ACPI 1.0 parser fail this device with a code 9.
+	 * The ECAM window is a build-time constant below 4 GiB here.
+	 */
 	Device (PERC)	// PCI ECAM Resource Consumption
 	{
 		Name (_HID, EisaId("PNP0C02"))
-		Method (_CRS, 0, Serialized)
+		Name (_CRS, ResourceTemplate ()
 		{
-			Name (RBUF, ResourceTemplate ()
-			{
-				QWordMemory (ResourceConsumer, PosDecode, MinFixed, MaxFixed,
-				    NonCacheable, ReadWrite,
-				    0x0000000000000000, // Granularity
-				    0x0000000000000000, // _MIN
-				    0x0000000000000001, // _MAX
-				    0x0000000000000000, // Translation
-				    0x0000000000000002, // _Len
-				    ,, _Y00, AddressRangeMemory, TypeStatic)
-			})
-			CreateQWordField (RBUF, \_SB.PERC._CRS._Y00._MIN, MIN1)
-			CreateQWordField (RBUF, \_SB.PERC._CRS._Y00._MAX, MAX1)
-			CreateQWordField (RBUF, \_SB.PERC._CRS._Y00._LEN, LEN1)
-			MIN1 = CONFIG_ECAM_MMCONF_BASE_ADDRESS
-			MAX1 = (MIN1 + CONFIG_ECAM_MMCONF_LENGTH -1)
-			LEN1 = CONFIG_ECAM_MMCONF_LENGTH
-			Return (RBUF)
-		}
+			Memory32Fixed (ReadWrite, CONFIG_ECAM_MMCONF_BASE_ADDRESS,
+				       CONFIG_ECAM_MMCONF_LENGTH)
+		})
 	}
 }
 #endif
