@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
+#include <acpi/acpi_device.h>
+#include <acpi/acpigen.h>
 #include <device/mmio.h>
 #include <device/pci_ops.h>
 #include <console/console.h>
@@ -365,10 +367,121 @@ static void sata_read_resources(struct device *dev)
 	}
 }
 
+static const char *sata_acpi_name(const struct device *dev)
+{
+	return is_sata2(dev) ? "SAT1" : "SAT0";
+}
+
+/*
+ * Dell's OEM firmware loads a mode-specific SATA SSDT: "IdeTable"
+ * (per-channel CHNx/DRVx objects) in IDE mode, "SataTabl" (per-port
+ * SPTx objects) in AHCI mode. Old Windows storage drivers are
+ * sensitive to this shape, so replicate it at runtime here. The bare
+ * SAT0/SAT1 devices these scopes attach to live in acpi/sata.asl.
+ */
+
+/* _GTM: fixed timings (PIO 120ns, MWDMA2 20ns), _STM: nothing to set */
+static void sata_acpigen_timing_methods(uint8_t flags)
+{
+	uint8_t tmd[20] = {
+		0x78, 0, 0, 0,	/* PIO speed, drive 0 */
+		0x14, 0, 0, 0,	/* DMA speed, drive 0 */
+		0x78, 0, 0, 0,	/* PIO speed, drive 1 */
+		0x14, 0, 0, 0,	/* DMA speed, drive 1 */
+		flags, 0, 0, 0,
+	};
+
+	acpigen_write_method("_GTM", 0);
+	acpigen_write_return_byte_buffer(tmd, sizeof(tmd));
+	acpigen_pop_len();
+
+	acpigen_write_method("_STM", 3);
+	acpigen_pop_len();
+}
+
+static void sata_acpigen_gtf(uint8_t *taskfiles, size_t size)
+{
+	acpigen_write_method("_GTF", 0);
+	acpigen_write_return_byte_buffer(taskfiles, size);
+	acpigen_pop_len();
+}
+
+static void sata_fill_ssdt_ide(const struct device *dev)
+{
+	/* SET FEATURES transfer mode, DCO freeze lock, security freeze lock */
+	uint8_t taskfiles[21] = {
+		0x10, 0x06, 0x00, 0x00, 0x00, 0x00, 0xef,
+		0xc1, 0x00, 0x00, 0x00, 0x00, 0x00, 0xb1,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf5,
+	};
+	const bool sata2 = is_sata2(dev);
+
+	acpigen_write_scope(acpi_device_path(dev));
+	for (unsigned int chan = 0; chan < 2; chan++) {
+		acpigen_write_device(chan ? "CHN1" : "CHN0");
+		acpigen_write_name_integer("_ADR", chan);
+		sata_acpigen_timing_methods(sata2 ? 0x01 : 0x05);
+		/* SATA2 (mSATA) is a single-drive channel */
+		for (unsigned int drive = 0; drive < (sata2 ? 1 : 2); drive++) {
+			acpigen_write_device(drive ? "DRV1" : "DRV0");
+			acpigen_write_name_integer("_ADR", drive);
+			sata_acpigen_gtf(taskfiles, sizeof(taskfiles));
+			acpigen_write_device_end();
+		}
+		acpigen_write_device_end();
+	}
+	acpigen_write_scope_end();
+}
+
+static void sata_fill_ssdt_ahci(const struct device *dev,
+				const struct southbridge_intel_lynxpoint_config *config)
+{
+	/* SET FEATURES transfer mode, security freeze lock, DCO freeze lock */
+	uint8_t taskfiles[21] = {
+		0x10, 0x06, 0x00, 0x00, 0x00, 0x00, 0xef,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf5,
+		0xc1, 0x00, 0x00, 0x00, 0x00, 0x00, 0xb1,
+	};
+	char name[5] = "SPT0";
+
+	acpigen_write_scope(acpi_device_path(dev));
+	sata_acpigen_timing_methods(0x05);
+	for (unsigned int port = 0; port < 6; port++) {
+		if (!(config->sata_port_map & (1 << port)))
+			continue;
+		name[3] = '0' + port;
+		acpigen_write_device(name);
+		acpigen_write_name_integer("_ADR", ((uint64_t)port << 16) | 0xffff);
+		sata_acpigen_gtf(taskfiles, sizeof(taskfiles));
+		acpigen_write_device_end();
+	}
+	acpigen_write_scope_end();
+}
+
+static void sata_fill_ssdt(const struct device *dev)
+{
+	const struct southbridge_intel_lynxpoint_config *config = dev->chip_info;
+
+	if (!config)
+		return;
+
+	const uint8_t sata_mode = get_sata_mode(config);
+
+	if (is_sata2(dev) && sata_mode != SATA_MODE_IDE_NATIVE)
+		return;
+
+	if (sata_mode == SATA_MODE_AHCI)
+		sata_fill_ssdt_ahci(dev, config);
+	else
+		sata_fill_ssdt_ide(dev);
+}
+
 static struct device_operations sata_ops = {
 	.read_resources		= sata_read_resources,
 	.set_resources		= pci_dev_set_resources,
 	.enable_resources	= pci_dev_enable_resources,
+	.acpi_fill_ssdt		= sata_fill_ssdt,
+	.acpi_name		= sata_acpi_name,
 	.init			= sata_init,
 	.enable			= sata_enable,
 	.ops_pci		= &pci_dev_ops_pci,
