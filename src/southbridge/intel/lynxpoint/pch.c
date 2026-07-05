@@ -4,6 +4,7 @@
 #include <device/pci_ops.h>
 #include <device/device.h>
 #include <device/pci.h>
+#include <option.h>
 #include "iobp.h"
 #include "pch.h"
 
@@ -193,7 +194,8 @@ void pch_enable(struct device *dev)
 		/* Disable this device if possible */
 		pch_disable_devfn(dev);
 	} else {
-		if (dev->path.pci.devfn == PCI_DEVFN(31, 5)) {
+		if (dev->path.pci.devfn == PCI_DEVFN(31, 5) &&
+		    get_uint_option("sata2", 1)) {
 			struct device *sata = pcidev_on_root(0x1f, 2);
 
 			RCBA32_AND_OR(FD, ~PCH_DISABLE_SATA2, 0);

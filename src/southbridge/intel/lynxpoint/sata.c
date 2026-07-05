@@ -53,6 +53,12 @@ static bool is_sata2(const struct device *dev)
 	return dev->path.pci.devfn == PCI_DEVFN(0x1f, 5);
 }
 
+/* Setup option to expose the second IDE-mode SATA function (00:1f.5) */
+static bool sata2_option_enabled(void)
+{
+	return get_uint_option("sata2", 1);
+}
+
 static void sata_program_ide_bars(struct device *dev)
 {
 	const u16 *bars = sata_ide_bars[is_sata2(dev) ? 1 : 0];
@@ -103,9 +109,13 @@ static void sata_init(struct device *dev)
 	const bool sata2 = is_sata2(dev);
 	u8 port_map = config->sata_port_map;
 
+	/* Do not claim the SATA2-owned mSATA port when SATA2 is hidden */
+	if (sata_mode == SATA_MODE_IDE_NATIVE && !sata2_option_enabled())
+		port_map &= 0x0f;
+
 	/* SATA configuration */
 
-	if (sata2 && sata_mode != SATA_MODE_IDE_NATIVE) {
+	if (sata2 && (sata_mode != SATA_MODE_IDE_NATIVE || !sata2_option_enabled())) {
 		printk(BIOS_DEBUG, "SATA2: Hidden outside IDE native mode.\n");
 		return;
 	}
@@ -159,7 +169,7 @@ static void sata_init(struct device *dev)
 
 	/* for AHCI, Port Enable is managed in memory mapped space */
 	pci_update_config16(dev, 0x92, ~SATA_PORT_MASK,
-			    (!ahci_mode ? SATA_PCS_ENABLE_IDE2 : 0) |
+			    (!ahci_mode && sata2_option_enabled() ? SATA_PCS_ENABLE_IDE2 : 0) |
 			    0x8000 | (sata2 ? SATA2_IDE_PORT_MAP : port_map));
 	udelay(2);
 
@@ -310,7 +320,7 @@ static void sata_enable(struct device *dev)
 	mode = get_sata_mode(config);
 	sata2 = is_sata2(dev);
 
-	if (sata2 && mode != SATA_MODE_IDE_NATIVE) {
+	if (sata2 && (mode != SATA_MODE_IDE_NATIVE || !sata2_option_enabled())) {
 		pci_and_config16(dev, PCI_COMMAND,
 				 ~(PCI_COMMAND_MASTER | PCI_COMMAND_MEMORY | PCI_COMMAND_IO));
 		pch_disable_devfn(dev);
@@ -318,6 +328,10 @@ static void sata_enable(struct device *dev)
 	}
 
 	u8 port_map = config->sata_port_map;
+
+	/* Do not claim the SATA2-owned mSATA port when SATA2 is hidden */
+	if (mode == SATA_MODE_IDE_NATIVE && !sata2_option_enabled())
+		port_map &= 0x0f;
 
 	if (mode == SATA_MODE_AHCI)
 		sata_mode = SATA_MAP_AHCI;
@@ -336,7 +350,8 @@ static void sata_enable(struct device *dev)
 
 	if (!sata2 && mode == SATA_MODE_IDE_NATIVE)
 		pci_update_config16(dev, 0x92, ~SATA_PORT_MASK,
-				    SATA_PCS_ENABLE_IDE2 | 0x8000 | port_map);
+				    (sata2_option_enabled() ? SATA_PCS_ENABLE_IDE2 : 0) |
+				    0x8000 | port_map);
 
 	if (mode == SATA_MODE_IDE_NATIVE)
 		sata_program_ide_bars(dev);
@@ -467,7 +482,8 @@ static void sata_fill_ssdt(const struct device *dev)
 
 	const uint8_t sata_mode = get_sata_mode(config);
 
-	if (is_sata2(dev) && sata_mode != SATA_MODE_IDE_NATIVE)
+	if (is_sata2(dev) &&
+	    (sata_mode != SATA_MODE_IDE_NATIVE || !sata2_option_enabled()))
 		return;
 
 	if (sata_mode == SATA_MODE_AHCI)
