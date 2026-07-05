@@ -6,6 +6,7 @@
 #include <device/device.h>
 #include <device/pci.h>
 #include <device/pci_ids.h>
+#include <device/resource.h>
 #include <delay.h>
 #include <option.h>
 #include "chip.h"
@@ -27,6 +28,13 @@
 #define SATA_PROGIF_NATIVE	0x05
 #define SATA_PROGIF_IDE2	0x85
 #define SATA_PCS_ENABLE_IDE2	(1 << 9)
+#define SATA2_IDE_PORT_MAP	0x01
+#define SATA2_IDE_MAP		0x0200
+
+static const u16 sata_ide_bars[2][6] = {
+	{ 0xf130, 0xf120, 0xf110, 0xf100, 0xf0f0, 0xf0e0 },
+	{ 0xf0d0, 0xf0c0, 0xf0b0, 0xf0a0, 0xf090, 0xf080 },
+};
 
 static uint8_t get_sata_mode(const struct southbridge_intel_lynxpoint_config *config)
 {
@@ -41,6 +49,15 @@ static uint8_t get_sata_mode(const struct southbridge_intel_lynxpoint_config *co
 static bool is_sata2(const struct device *dev)
 {
 	return dev->path.pci.devfn == PCI_DEVFN(0x1f, 5);
+}
+
+static void sata_program_ide_bars(struct device *dev)
+{
+	const u16 *bars = sata_ide_bars[is_sata2(dev) ? 1 : 0];
+
+	for (size_t i = 0; i < ARRAY_SIZE(sata_ide_bars[0]); i++)
+		pci_write_config32(dev, PCI_BASE_ADDRESS_0 + i * sizeof(u32),
+				   bars[i] | PCI_BASE_ADDRESS_SPACE_IO);
 }
 
 static inline u32 sir_read(struct device *dev, int idx)
@@ -82,6 +99,7 @@ static void sata_init(struct device *dev)
 	const uint8_t sata_mode = get_sata_mode(config);
 	const bool ahci_mode = sata_mode == SATA_MODE_AHCI;
 	const bool sata2 = is_sata2(dev);
+	u8 port_map = config->sata_port_map;
 
 	/* SATA configuration */
 
@@ -116,9 +134,11 @@ static void sata_init(struct device *dev)
 
 	/* Set Interrupt Line. Interrupt Pin is set by D31IP.PIP. */
 	if (sata_mode == SATA_MODE_IDE_NATIVE) {
-		RCBA16(D31IR) = DIR_ROUTE(PIRQA, PIRQD, PIRQC, PIRQD);
-		pci_write_config8(dev, PCI_INTERRUPT_LINE, 0x03);
-		pci_write_config8(pcidev_on_root(0x1f, 0), PIRQD_ROUT, 0x03);
+		RCBA16(D31IR) = DIR_ROUTE(PIRQF, PIRQD, PIRQC, PIRQA);
+		/* Both SATA functions hint IRQ 10; IRQ 5 is kept device-free
+		   for DOS Sound Blaster emulation. */
+		pci_write_config8(dev, PCI_INTERRUPT_LINE, 0x0a);
+		pci_write_config8(pcidev_on_root(0x1f, 0), PIRQD_ROUT, 0x8a);
 	} else {
 		pci_write_config8(dev, PCI_INTERRUPT_LINE, 0x0a);
 	}
@@ -128,8 +148,8 @@ static void sata_init(struct device *dev)
 
 	/* for AHCI, Port Enable is managed in memory mapped space */
 	pci_update_config16(dev, 0x92, ~SATA_PORT_MASK,
-			    (ahci_mode ? 0 : SATA_PCS_ENABLE_IDE2) |
-			    0x8000 | (sata2 ? 0x03 : config->sata_port_map));
+			    (!ahci_mode ? SATA_PCS_ENABLE_IDE2 : 0) |
+			    0x8000 | (sata2 ? SATA2_IDE_PORT_MAP : port_map));
 	udelay(2);
 
 	/* Setup register 98h */
@@ -155,7 +175,7 @@ static void sata_init(struct device *dev)
 
 	/* SATA Initialization register */
 	reg32 = 0x183;
-	reg32 |= ((sata2 ? 0x03 : config->sata_port_map) ^ SATA_PORT_MASK) << 24;
+	reg32 |= ((sata2 ? SATA2_IDE_PORT_MAP : port_map) ^ SATA_PORT_MASK) << 24;
 	reg32 |= (config->sata_devslp_mux & 1) << 15;
 	pci_write_config32(dev, 0x94, reg32);
 
@@ -286,24 +306,58 @@ static void sata_enable(struct device *dev)
 		return;
 	}
 
+	u8 port_map = config->sata_port_map;
+
 	if (mode == SATA_MODE_AHCI)
 		sata_mode = SATA_MAP_AHCI;
 	else
 		sata_mode = SATA_MAP_IDE;
 
-	pci_write_config16(dev, 0x90,
-			   sata_mode | ((sata2 ? 0x03 : config->sata_port_map) ^ SATA_PORT_MASK) << 8);
+	if (sata2) {
+		pci_write_config32(dev, 0x90,
+				   SATA_MAP_IDE | SATA2_IDE_MAP |
+				   (SATA2_IDE_PORT_MAP << 16) |
+				   (SATA2_IDE_PORT_MAP << 24));
+	} else {
+		pci_write_config16(dev, 0x90,
+				   sata_mode | ((port_map ^ SATA_PORT_MASK) << 8));
+	}
 
 	if (!sata2 && mode == SATA_MODE_IDE_NATIVE)
 		pci_update_config16(dev, 0x92, ~SATA_PORT_MASK,
-				    SATA_PCS_ENABLE_IDE2 | 0x8000 | config->sata_port_map);
+				    SATA_PCS_ENABLE_IDE2 | 0x8000 | port_map);
+
+	if (mode == SATA_MODE_IDE_NATIVE)
+		sata_program_ide_bars(dev);
 
 	if (!sata2 && mode == SATA_MODE_IDE_NATIVE)
 		pci_write_config32(dev, 0x9c, (1 << 31) | (1 << 5));
 }
 
+static void sata_read_resources(struct device *dev)
+{
+	struct southbridge_intel_lynxpoint_config *config = dev->chip_info;
+
+	pci_dev_read_resources(dev);
+
+	if (!config || get_sata_mode(config) != SATA_MODE_IDE_NATIVE)
+		return;
+
+	const u16 *bars = sata_ide_bars[is_sata2(dev) ? 1 : 0];
+
+	for (size_t i = 0; i < ARRAY_SIZE(sata_ide_bars[0]); i++) {
+		struct resource *res = find_resource(dev, PCI_BASE_ADDRESS_0 + i * sizeof(u32));
+
+		if (!res || !(res->flags & IORESOURCE_IO))
+			continue;
+
+		res->base = bars[i];
+		res->flags |= IORESOURCE_ASSIGNED | IORESOURCE_FIXED | IORESOURCE_STORED;
+	}
+}
+
 static struct device_operations sata_ops = {
-	.read_resources		= pci_dev_read_resources,
+	.read_resources		= sata_read_resources,
 	.set_resources		= pci_dev_set_resources,
 	.enable_resources	= pci_dev_enable_resources,
 	.init			= sata_init,
