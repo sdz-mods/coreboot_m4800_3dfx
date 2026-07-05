@@ -99,11 +99,14 @@ void early_pch_init(void)
 	/* Enable SMBus for reading SPDs. */
 	enable_smbus();
 
-	/* Enable IOAPIC */
-	RCBA16(OIC) = 0x0100;
+	/* Enable IOAPIC and coprocessor error reporting (FERR# -> IRQ13) */
+	RCBA16(OIC) = 0x0300;
 
 	/* PCH BWG says to read back the IOAPIC enable register */
 	(void)RCBA16(OIC);
+
+	/* FERR# MUX Enable, like OEM firmware */
+	RCBA32_OR(GCS, 1 << 6);
 
 	/* Mainboard RCBA settings */
 	mainboard_config_rcba();
