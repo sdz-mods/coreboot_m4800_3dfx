@@ -134,6 +134,15 @@ static void sata_init(struct device *dev)
 
 	/* Set Interrupt Line. Interrupt Pin is set by D31IP.PIP. */
 	if (sata_mode == SATA_MODE_IDE_NATIVE) {
+		/*
+		 * SATA1 on INTB (PIRQD/IRQ5), SATA2 on INTC (PIRQC/IRQ10):
+		 * a dedicated interrupt per controller keeps Win98's
+		 * ESDI_506.PDR away from two disk controllers on one line.
+		 * (OEM uses INTB for both.)
+		 */
+		RCBA32_AND_OR(D31IP,
+			      ~((0xf << D31IP_SIP) | (0xf << D31IP_SIP2)),
+			      (INTB << D31IP_SIP) | (INTC << D31IP_SIP2));
 		RCBA16(D31IR) = DIR_ROUTE(PIRQF, PIRQD, PIRQC, PIRQA);
 		/* Both SATA functions hint IRQ 10; IRQ 5 is kept device-free
 		   for DOS Sound Blaster emulation. */
