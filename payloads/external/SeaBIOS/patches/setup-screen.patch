@@ -1,5 +1,5 @@
 diff --git a/src/boot.c b/src/boot.c
-index 1effd802..d65b730e 100644
+index 1effd802..fd21c4a4 100644
 --- a/src/boot.c
 +++ b/src/boot.c
 @@ -8,9 +8,12 @@
@@ -111,7 +111,7 @@ index 1effd802..d65b730e 100644
  }
  
  
-@@ -681,6 +735,132 @@ get_keystroke(int msec)
+@@ -681,6 +735,135 @@ get_keystroke(int msec)
   ****************************************************************/
  
  #define DEFAULT_BOOTMENU_WAIT 2500
@@ -122,6 +122,7 @@ index 1effd802..d65b730e 100644
 +#define SETUP_CMOS_HDA_DISABLE	52
 +#define SETUP_CMOS_TURBO_DISABLE	52
 +#define SETUP_CMOS_VGA_MUX	52
++#define SETUP_CMOS_SATA2	52
 +#define SETUP_CMOS_BOOT_DELAY	53
 +#define SETUP_CMOS_CSUM_START	49
 +#define SETUP_CMOS_CSUM_END	55
@@ -131,6 +132,7 @@ index 1effd802..d65b730e 100644
 +#define SETUP_HDA_DISABLE_DEFAULT	0
 +#define SETUP_TURBO_DISABLE_DEFAULT	0
 +#define SETUP_VGA_MUX_DEFAULT	0
++#define SETUP_SATA2_DEFAULT	1
 +#define SETUP_BOOT_ORDER_DEFAULT	0
 +#define SETUP_BOOT_DELAY_DEFAULT	2
 +#define SETUP_BIOS_VERSION	"M4800-3DFX-0.1"
@@ -229,6 +231,7 @@ index 1effd802..d65b730e 100644
 +    u8 hda_disable;
 +    u8 turbo_disable;
 +    u8 vga_mux;
++    u8 sata2;
 +    int selected;
 +};
 +
@@ -244,7 +247,7 @@ index 1effd802..d65b730e 100644
  
  static const char menuchars[] = {
      '1', '2', '3', '4', '5', '6', '7', '8', '9',
-@@ -690,36 +870,1717 @@ static const char menuchars[] = {
+@@ -690,36 +873,1759 @@ static const char menuchars[] = {
      'u', 'v', 'w', 'x', 'y', 'z'
  };
  
@@ -575,6 +578,12 @@ index 1effd802..d65b730e 100644
 +}
 +
 +static u8
++setup_read_sata2(void)
++{
++    return (setup_cmos_read(SETUP_CMOS_SATA2) >> 7) & 0x01;
++}
++
++static u8
 +setup_read_boot_order(void)
 +{
 +    return (setup_cmos_read(SETUP_CMOS_BOOT_ORDER) >> 5) & 0x03;
@@ -623,6 +632,15 @@ index 1effd802..d65b730e 100644
 +}
 +
 +static void
++setup_write_sata2(u8 enable)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_SATA2);
++
++    value = (value & ~0x80) | ((enable & 0x01) << 7);
++    setup_cmos_write(SETUP_CMOS_SATA2, value);
++}
++
++static void
 +setup_write_boot_order(u8 order)
 +{
 +    u8 value = setup_cmos_read(SETUP_CMOS_BOOT_ORDER);
@@ -647,6 +665,7 @@ index 1effd802..d65b730e 100644
 +    setup_write_hda_disable(adv->hda_disable);
 +    setup_write_turbo_disable(adv->turbo_disable);
 +    setup_write_vga_mux(adv->vga_mux);
++    setup_write_sata2(adv->sata2);
 +    setup_cmos_update_checksum();
 +}
 +
@@ -665,6 +684,7 @@ index 1effd802..d65b730e 100644
 +    adv->hda_disable = SETUP_HDA_DISABLE_DEFAULT;
 +    adv->turbo_disable = SETUP_TURBO_DISABLE_DEFAULT;
 +    adv->vga_mux = SETUP_VGA_MUX_DEFAULT;
++    adv->sata2 = SETUP_SATA2_DEFAULT;
 +    boot->boot_order = SETUP_BOOT_ORDER_DEFAULT;
 +    boot->boot_delay = SETUP_BOOT_DELAY_DEFAULT;
 +}
@@ -708,6 +728,12 @@ index 1effd802..d65b730e 100644
 +setup_vga_mux_name(u8 target)
 +{
 +    return target ? "Dock" : "VGA connector";
++}
++
++static const char *
++setup_sata2_name(u8 enable)
++{
++    return enable ? "Enabled" : "Disabled";
 +}
 +
 +static const char *
@@ -1353,27 +1379,34 @@ index 1effd802..d65b730e 100644
 +static void
 +setup_draw_advanced_page(const struct setup_advanced_state *adv, int focus)
 +{
++    /* Secondary IDE controller only exists in IDE native mode */
++    int sata2_valid = adv->sata_mode == 1;
 +    u8 sata_attr = adv->selected == 0 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
-+    u8 hda_attr = adv->selected == 1 && focus == SETUP_FOCUS_PAGE
++    u8 sata2_label_attr = sata2_valid ? SETUP_ATTR_NORMAL : SETUP_ATTR_DISABLED;
++    u8 sata2_attr = adv->selected == 1 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : sata2_label_attr;
++    u8 hda_attr = adv->selected == 2 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
-+    u8 turbo_attr = adv->selected == 2 && focus == SETUP_FOCUS_PAGE
++    u8 turbo_attr = adv->selected == 3 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
-+    u8 vga_attr = adv->selected == 3 && focus == SETUP_FOCUS_PAGE
++    u8 vga_attr = adv->selected == 4 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
 +
 +    setup_clear_page();
 +    setup_draw_value_row(6, "SATA Mode", setup_sata_mode_name(adv->sata_mode),
 +                         SETUP_ATTR_NORMAL, sata_attr);
-+    setup_draw_value_row(7, "HD Audio", setup_hda_name(adv->hda_disable),
++    setup_draw_value_row(7, "mSATA Controller", setup_sata2_name(adv->sata2),
++                         sata2_label_attr, sata2_attr);
++    setup_draw_value_row(8, "HD Audio", setup_hda_name(adv->hda_disable),
 +                         SETUP_ATTR_NORMAL, hda_attr);
-+    setup_draw_value_row(8, "CPU Turbo", setup_turbo_name(adv->turbo_disable),
++    setup_draw_value_row(9, "CPU Turbo", setup_turbo_name(adv->turbo_disable),
 +                         SETUP_ATTR_NORMAL, turbo_attr);
-+    setup_draw_value_row(9, "CPU Clock Cap", "Not implemented",
++    setup_draw_value_row(10, "CPU Clock Cap", "Not implemented",
 +                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
-+    setup_draw_value_row(10, "Hyperthreading", "Not implemented",
++    setup_draw_value_row(11, "Hyperthreading", "Not implemented",
 +                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
-+    setup_draw_value_row(11, "VGA Mux", setup_vga_mux_name(adv->vga_mux),
++    setup_draw_value_row(12, "VGA Mux", setup_vga_mux_name(adv->vga_mux),
 +                         SETUP_ATTR_NORMAL, vga_attr);
 +    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Save  ESC Reboot  Left/Right Change");
 +}
@@ -1502,16 +1535,22 @@ index 1effd802..d65b730e 100644
 +            if (adv->selected == 0) {
 +                title = "SATA Mode";
 +                line1 = "AHCI is recommended for NT-based Windows and Linux.";
-+                line2 = "IDE native is recommended for Windows 98.";
-+                line3 = "Avoid IDE native on XP for now; use AHCI or legacy.";
++                line2 = "IDE native is recommended for Windows 98, and also";
++                line3 = "works with NT-based Windows and Linux.";
 +                action = "Press F10 to save, then reboot.";
 +            } else if (adv->selected == 1) {
++                title = "mSATA Controller";
++                line1 = "Exposes the second IDE controller (00:1f.5), which";
++                line2 = "carries the mSATA port. IDE native mode only.";
++                line3 = "";
++                action = "Press F10 to save, then reboot.";
++            } else if (adv->selected == 2) {
 +                title = "HD Audio";
 +                line1 = "Enables or disables the onboard HDA controller.";
 +                line2 = "";
 +                line3 = "";
 +                action = "Press F10 to save, then reboot.";
-+            } else if (adv->selected == 2) {
++            } else if (adv->selected == 3) {
 +                title = "CPU Turbo";
 +                line1 = "Controls whether turbo boost is allowed.";
 +                line2 = "";
@@ -1600,6 +1639,7 @@ index 1effd802..d65b730e 100644
 +    adv.hda_disable = setup_read_hda_disable();
 +    adv.turbo_disable = setup_read_turbo_disable();
 +    adv.vga_mux = setup_read_vga_mux();
++    adv.sata2 = setup_read_sata2();
 +    adv.selected = 0;
 +    boot.boot_order = setup_read_boot_order();
 +    boot.boot_delay = setup_read_boot_delay();
@@ -1729,9 +1769,9 @@ index 1effd802..d65b730e 100644
 +                    continue;
 +                }
 +                if (scan_code == SETUP_KEY_UP)
-+                    adv.selected = adv.selected == 0 ? 3 : adv.selected - 1;
++                    adv.selected = adv.selected == 0 ? 4 : adv.selected - 1;
 +                else
-+                    adv.selected = adv.selected == 3 ? 0 : adv.selected + 1;
++                    adv.selected = adv.selected == 4 ? 0 : adv.selected + 1;
 +                setup_draw_advanced_page(&adv, focus);
 +                setup_clear_message();
 +                continue;
@@ -1745,13 +1785,18 @@ index 1effd802..d65b730e 100644
 +                    else
 +                        adv.sata_mode = adv.sata_mode == 2 ? 0 : adv.sata_mode + 1;
 +                } else if (adv.selected == 1) {
-+                    adv.hda_disable = !adv.hda_disable;
++                    if (adv.sata_mode == 1)
++                        adv.sata2 = !adv.sata2;
 +                } else if (adv.selected == 2) {
++                    adv.hda_disable = !adv.hda_disable;
++                } else if (adv.selected == 3) {
 +                    adv.turbo_disable = !adv.turbo_disable;
 +                } else {
 +                    adv.vga_mux = !adv.vga_mux;
 +                }
 +                setup_draw_advanced_page(&adv, focus);
++                if (adv.selected == 1 && adv.sata_mode != 1)
++                    setup_message("mSATA Controller requires IDE native mode.");
 +            }
 +            if (scan_code == SETUP_KEY_F9) {
 +                setup_defaults(&adv, &boot);
