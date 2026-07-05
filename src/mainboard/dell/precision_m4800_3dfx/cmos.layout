@@ -28,6 +28,7 @@ entries
 419	1	e	1	turbo_disable
 420	1	e	16	vga_mux
 421	2	e	17	boot_order
+423	1	e	1	sata2
 427	2	e	18	boot_delay
 
 # coreboot config options: ME
