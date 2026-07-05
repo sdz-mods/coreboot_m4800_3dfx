@@ -49,7 +49,11 @@ display adapter.
 - Fixed ACPI PCI resource layout for legacy operating systems.
 - Legacy ACPI `Processor` objects for Windows XP SpeedStep compatibility.
 - SeaBIOS keyboard lock-LED handling for DOS and Windows 98.
-- Windows 98-oriented PCI IRQ routing.
+- Windows 98-oriented PCI IRQ routing with working level-triggered
+  interrupts for PIC-mode operating systems.
+- DOS sound (SBEMU) compatible HDA interrupt routing, verified with Doom.
+- Mode-specific SATA ACPI objects matching the OEM firmware.
+- mSATA support in IDE native mode, including under Windows 98.
 - Added Lynx Point SATA support for selectable AHCI, IDE native, and IDE
   legacy modes.
 
@@ -58,6 +62,7 @@ display adapter.
 - Configurable HDA controller state.
 - Configurable CPU Turbo state.
 - Configurable SATA mode and external VGA destination.
+- Configurable mSATA controller (IDE native mode).
 - Configurable boot order and boot-prompt delay.
 - Editable RTC date and time.
 
@@ -66,11 +71,10 @@ display adapter.
 | Mode | Intended use |
 | --- | --- |
 | AHCI | Recommended for NT-based Windows and Linux |
-| IDE native | Recommended for Windows 98 |
+| IDE native | Recommended for Windows 98 and DOS; fully working under Windows XP |
 | IDE legacy | Compatibility option using legacy IDE IRQ routing |
 
-IDE native currently causes an interrupt storm under Windows XP. AHCI is the
-recommended mode for XP.
+All three modes are usable under Windows XP.
 
 ## Project-Specific Changes
 
@@ -85,8 +89,11 @@ reimplementing the project.
 | Graphics selection | Disables the Intel iGPU before MRC, removes the Haswell integrated graphics build path, and leaves the MXM adapter as the sole graphics device. |
 | PCI resources | Uses fixed ACPI PCI windows: non-prefetchable MMIO at `0xe0000000-0xefffffff` and prefetchable MMIO at `0xd8000000-0xdfffffff`, with fixed legacy I/O ranges. |
 | CPU power management | Emits legacy ACPI `Processor` objects so Windows XP can bind its SpeedStep drivers and use the generated performance states. |
-| SATA | Extends the Lynx Point SATA driver with AHCI, IDE native, and IDE legacy initialization selected from CMOS. |
-| Legacy IRQ routing | Routes IDE-native SATA away from the crowded legacy PCI links and separates HDA from the IRQ 15 group used by graphics and USB under Windows 98. The tested Windows 98 assignments are SATA on IRQ 3 and HDA on IRQ 6. |
+| SATA | Extends the Lynx Point SATA driver with AHCI, IDE native, and IDE legacy initialization selected from CMOS, with OEM-style fixed I/O BARs in IDE native mode, a separate interrupt pin per SATA function (required by Windows 98's ESDI_506.PDR), and the second SATA function (mSATA) exposed in IDE native mode with a setup option to hide it. |
+| SATA ACPI | Generates mode-specific SATA ACPI objects at runtime, replicating Dell's per-mode SSDT swap: IDE channel and drive objects in IDE mode, AHCI port objects in AHCI mode. |
+| GPIO relocation | Moves GPIOBASE from 0x480 to 0x1c00 (OEM location). The old window shadowed the ELCR trigger-mode registers and ISA DMA high page registers, forcing all PIC-routed interrupts to edge-triggered — the root cause of Windows 98 "delayed write failed" corruption and lost level-triggered interrupts under PIC-mode operating systems. |
+| Legacy IRQ routing | Programs the OEM PIRQ routing table with coherent PCI_INTERRUPT_LINE hints for every function, including devices behind bridges. Dedicated interrupts for the disk controllers (IRQ 5/10 in PIC mode), HDA routed enabled at boot on IRQ 7 for DOS sound stacks (SBEMU), IRQ 5 kept otherwise device-free for Sound Blaster emulation, and AHCI-mode SATA on GSI 20 as required by Windows XP's AHCI stack. |
+| FPU error reporting | Enables FERR#/IRQ 13 coprocessor error routing (OIC/GCS) like the OEM firmware, for DOS and Win9x-era software. |
 | Audio | Supplies Realtek ALC292 verbs, adds early HDA disable support, and sends the Dell EC speaker-unmute command required for working audio. |
 | Dell EC | Routes power-button events to the host OS and controls the dGPU VGA mux for either the laptop or docking-station connector. |
 | SeaBIOS keyboard | Updates Caps Lock, Num Lock, and Scroll Lock LEDs directly so they work under DOS, Windows 98, and Windows XP. |
@@ -94,7 +101,7 @@ reimplementing the project.
 | Setup utility | Adds persistent CMOS controls, RTC editing, boot selection, system information, contextual help, and direct M3800/M4800 information, telemetry, and card settings. |
 | Card recovery | Detects repeated `R` input at the SeaBIOS prompt, restores safe MXM-card defaults, and reboots. |
 | Platform devices | Configures the USB 2.0/3.0 port maps, TPM 1.2, docking, Ethernet, optical drive, and HDD/ODD/mSATA port map, with CMOS defaults for the wireless radios. |
-| Device policy | Disables the unused Intel ME interfaces, IDE-R, KT, secondary legacy SATA function, and PCH thermal device in the board devicetree. |
+| Device policy | Disables the unused Intel ME interfaces, IDE-R, KT, and PCH thermal device in the board devicetree. |
 
 ## Hardware Compatibility
 
@@ -105,10 +112,10 @@ The following table records configurations tested with this firmware.
 | USB 2.0 | Confirmed | Confirmed | Confirmed |
 | USB 3.0 | X | Confirmed | Confirmed |
 | SATA HDD/SSD in AHCI mode | X | Confirmed | Confirmed |
-| SATA HDD/SSD in IDE native mode | Confirmed | Partial[^1] | Confirmed |
+| SATA HDD/SSD in IDE native mode | Confirmed | Confirmed | Confirmed |
 | SATA HDD/SSD in IDE legacy mode | Confirmed | Confirmed | Confirmed |
 | SATA ODD | Confirmed | Confirmed | Confirmed |
-| mSATA | X | Confirmed[^2] | Confirmed[^2] |
+| mSATA | Confirmed[^1] | Confirmed[^1] | Confirmed[^1] |
 | HDA audio | Confirmed | Confirmed | Confirmed |
 | Ethernet | X | Confirmed | Confirmed |
 | Wi-Fi and Bluetooth | X | Confirmed | Confirmed |
@@ -118,11 +125,11 @@ The following table records configurations tested with this firmware.
 | Keyboard lock LEDs | Confirmed | Confirmed | Confirmed |
 | RTC date and time | Confirmed | Confirmed | Confirmed |
 | ACPI | Confirmed | Confirmed | Confirmed |
-| AC adapter and battery state | Partial[^3] | Confirmed | Confirmed |
+| AC adapter and battery state | Partial[^2] | Confirmed | Confirmed |
 | Voodoo3 M3800 variants | Confirmed | Confirmed | Confirmed |
 | Voodoo4 M4800 variants | Confirmed | Confirmed | Confirmed |
 | Laptop VGA output | Confirmed | Confirmed | Confirmed |
-| Laptop eSATA port | -[^6] | -[^6] | -[^6] |
+| Laptop eSATA port | -[^5] | -[^5] | -[^5] |
 | Docking-station VGA output | Confirmed | Confirmed | Confirmed |
 | Docking-station USB 2.0 | Confirmed | Confirmed | Confirmed |
 | Docking-station USB 3.0 | X | Confirmed | Confirmed |
@@ -134,30 +141,30 @@ The following table records configurations tested with this firmware.
 | Docking-station COM port | X | X | X |
 | Docking-station parallel port | X | X | X |
 | Docking-station audio jacks | - | - | - |
-| Docking-station eSATA | -[^6] | -[^6] | -[^6] |
+| Docking-station eSATA | -[^5] | -[^5] | -[^5] |
 | DisplayPort and HDMI output | X | X | X |
-| Internal panel | Confirmed | Confirmed | Confirmed[^5] |
-| 1920x1080 internal panel | Confirmed[^4] | Confirmed[^4] | Confirmed[^5] |
+| Internal panel | Confirmed | Confirmed | Confirmed[^4] |
+| 1920x1080 internal panel | Confirmed[^3] | Confirmed[^3] | Confirmed[^4] |
 | S3 suspend/standby | X | X | X |
 
 `-` means that support has not been confirmed for that operating system.
 `X` means that the hardware is unavailable in this configuration or is not
 supported by that operating system.
 
-[^1]: IDE native mode works under Windows XP but causes a severe interrupt
-      storm. AHCI is recommended instead.
-[^2]: mSATA works only when the SATA controller is configured in AHCI mode.
-[^3]: Windows 98 correctly detects AC or battery operation and reports
+[^1]: mSATA works in AHCI mode and, through the second SATA controller, in
+      IDE native mode. In IDE native mode it can be hidden with the mSATA
+      Controller setup option.
+[^2]: Windows 98 correctly detects AC or battery operation and reports
       charging or discharging state, but the reported battery charge
       percentage is incorrect.
-[^4]: On Voodoo4 M4800 cards, the 1920x1080 internal panel requires a registry
+[^3]: On Voodoo4 M4800 cards, the 1920x1080 internal panel requires a registry
       patch under Windows 98 and Windows XP due to a VSA-100 limitation. The
       patch is not required for Voodoo3 M3800 cards.
-[^5]: The stock `xserver-xorg-video-tdfx` X11 driver programs the VSA PLLs
+[^4]: The stock `xserver-xorg-video-tdfx` X11 driver programs the VSA PLLs
       incorrectly and can drive the VCO outside its valid range at any
       resolution. Linux testing uses a patched driver that corrects the PLL
       programming.
-[^6]: eSATA likely works, but no eSATA device was available for testing.
+[^5]: eSATA likely works, but no eSATA device was available for testing.
 
 ## Setup Utility
 
@@ -170,7 +177,7 @@ The setup utility contains:
 | --- | --- |
 | Info | System, CPU, memory, 3dfx card, VBIOS, coreboot, and SeaBIOS information |
 | Main | RTC date and time |
-| Advanced | SATA mode, HDA, CPU Turbo, and VGA mux routing |
+| Advanced | SATA mode, mSATA controller, HDA, CPU Turbo, and VGA mux routing |
 | Boot | Boot order and boot-prompt delay |
 | 3dfx | MXM card information, telemetry, and persistent card settings |
 | Save & Exit | Save, discard, restore defaults, or reset the MXM card settings |
@@ -228,9 +235,7 @@ not used by this project.
 
 ## Known Limitations
 
-- mSATA works in AHCI mode but not currently in either IDE mode.
 - S3 suspend/standby is not supported.
-- IDE native mode causes an IRQ storm under Windows XP.
 
 ## Building
 
