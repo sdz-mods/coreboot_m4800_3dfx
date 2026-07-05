@@ -8,7 +8,8 @@ Device (LNKA)
 	// Disable method
 	Method (_DIS, 0, Serialized)
 	{
-		PRTA = 0x80
+		/* Keep the IRQ hint in the low nibble, like vendor firmware */
+		PRTA |= 0x80
 	}
 
 	// Possible Resource Settings for this Link
@@ -67,7 +68,8 @@ Device (LNKB)
 	// Disable method
 	Method (_DIS, 0, Serialized)
 	{
-		PRTB = 0x80
+		/* Keep the IRQ hint in the low nibble, like vendor firmware */
+		PRTB |= 0x80
 	}
 
 	// Possible Resource Settings for this Link
@@ -126,7 +128,8 @@ Device (LNKC)
 	// Disable method
 	Method (_DIS, 0, Serialized)
 	{
-		PRTC = 0x80
+		/* Keep the IRQ hint in the low nibble, like vendor firmware */
+		PRTC |= 0x80
 	}
 
 	// Possible Resource Settings for this Link
@@ -185,7 +188,8 @@ Device (LNKD)
 	// Disable method
 	Method (_DIS, 0, Serialized)
 	{
-		PRTD = 0x80
+		/* Keep the IRQ hint in the low nibble, like vendor firmware */
+		PRTD |= 0x80
 	}
 
 	// Possible Resource Settings for this Link
@@ -244,7 +248,8 @@ Device (LNKE)
 	// Disable method
 	Method (_DIS, 0, Serialized)
 	{
-		PRTE = 0x80
+		/* Keep the IRQ hint in the low nibble, like vendor firmware */
+		PRTE |= 0x80
 	}
 
 	// Possible Resource Settings for this Link
@@ -303,7 +308,8 @@ Device (LNKF)
 	// Disable method
 	Method (_DIS, 0, Serialized)
 	{
-		PRTF = 0x80
+		/* Keep the IRQ hint in the low nibble, like vendor firmware */
+		PRTF |= 0x80
 	}
 
 	// Possible Resource Settings for this Link
@@ -362,7 +368,8 @@ Device (LNKG)
 	// Disable method
 	Method (_DIS, 0, Serialized)
 	{
-		PRTG = 0x80
+		/* Keep the IRQ hint in the low nibble, like vendor firmware */
+		PRTG |= 0x80
 	}
 
 	// Possible Resource Settings for this Link
@@ -421,7 +428,8 @@ Device (LNKH)
 	// Disable method
 	Method (_DIS, 0, Serialized)
 	{
-		PRTH = 0x80
+		/* Keep the IRQ hint in the low nibble, like vendor firmware */
+		PRTH |= 0x80
 	}
 
 	// Possible Resource Settings for this Link
