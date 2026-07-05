@@ -1,5 +1,5 @@
 diff --git a/src/boot.c b/src/boot.c
-index 1effd802..1d19b943 100644
+index 1effd802..c7fe49b9 100644
 --- a/src/boot.c
 +++ b/src/boot.c
 @@ -8,9 +8,12 @@
@@ -247,7 +247,7 @@ index 1effd802..1d19b943 100644
  
  static const char menuchars[] = {
      '1', '2', '3', '4', '5', '6', '7', '8', '9',
-@@ -690,36 +873,1759 @@ static const char menuchars[] = {
+@@ -690,36 +873,1771 @@ static const char menuchars[] = {
      'u', 'v', 'w', 'x', 'y', 'z'
  };
  
@@ -453,11 +453,13 @@ index 1effd802..1d19b943 100644
 +}
 +
 +static void
++setup_write_datetime(const struct setup_datetime_state *dt);
++
++static void
 +setup_read_datetime(struct setup_datetime_state *dt)
 +{
 +    u8 status_b;
 +    u8 year;
-+    u8 century;
 +
 +    rtc_updating();
 +    status_b = rtc_read(CMOS_STATUS_B);
@@ -467,7 +469,6 @@ index 1effd802..1d19b943 100644
 +    dt->day = rtc_read(CMOS_RTC_DAY_MONTH);
 +    dt->month = rtc_read(CMOS_RTC_MONTH);
 +    year = rtc_read(CMOS_RTC_YEAR);
-+    century = rtc_read(CMOS_CENTURY);
 +
 +    if (!(status_b & RTC_B_BIN)) {
 +        dt->sec = setup_bcd_to_bin(dt->sec);
@@ -476,10 +477,23 @@ index 1effd802..1d19b943 100644
 +        dt->day = setup_bcd_to_bin(dt->day);
 +        dt->month = setup_bcd_to_bin(dt->month);
 +        year = setup_bcd_to_bin(year);
-+        century = setup_bcd_to_bin(century);
 +    }
 +
-+    dt->year = (century * 100) + year;
++    /* The century byte is not maintained (see coreboot); assume 20xx */
++    dt->year = 2000 + year;
++
++    /* A dead or removed RTC battery leaves garbage: reset to defaults */
++    if (dt->sec > 59 || dt->min > 59 || dt->hour > 23
++        || dt->day < 1 || dt->day > 31 || dt->month < 1 || dt->month > 12
++        || dt->year > 2099) {
++        dt->sec = 0;
++        dt->min = 0;
++        dt->hour = 12;
++        dt->day = 1;
++        dt->month = 1;
++        dt->year = 2026;
++        setup_write_datetime(dt);
++    }
 +}
 +
 +static u8
@@ -498,7 +512,6 @@ index 1effd802..1d19b943 100644
 +    u8 day = dt->day;
 +    u8 month = dt->month;
 +    u8 year = dt->year % 100;
-+    u8 century = dt->year / 100;
 +
 +    if (!(status_b & RTC_B_BIN)) {
 +        sec = setup_bin_to_bcd(sec);
@@ -507,7 +520,6 @@ index 1effd802..1d19b943 100644
 +        day = setup_bin_to_bcd(day);
 +        month = setup_bin_to_bcd(month);
 +        year = setup_bin_to_bcd(year);
-+        century = setup_bin_to_bcd(century);
 +    }
 +
 +    rtc_mask(CMOS_STATUS_B, 0, RTC_B_SET);
@@ -517,7 +529,6 @@ index 1effd802..1d19b943 100644
 +    rtc_write(CMOS_RTC_DAY_MONTH, day);
 +    rtc_write(CMOS_RTC_MONTH, month);
 +    rtc_write(CMOS_RTC_YEAR, year);
-+    rtc_write(CMOS_CENTURY, century);
 +    rtc_mask(CMOS_STATUS_B, RTC_B_SET, 0);
 +}
 +
@@ -1749,7 +1760,8 @@ index 1effd802..1d19b943 100644
 +                    dt.day = increase ? (dt.day == 31 ? 1 : dt.day + 1)
 +                                      : (dt.day <= 1 ? 31 : dt.day - 1);
 +                else if (dt.selected == 5)
-+                    dt.year = increase ? dt.year + 1 : (dt.year > 1980 ? dt.year - 1 : dt.year);
++                    dt.year = increase ? (dt.year < 2099 ? dt.year + 1 : dt.year)
++                                       : (dt.year > 2000 ? dt.year - 1 : dt.year);
 +                setup_draw_main_page(&dt, focus);
 +                continue;
 +            }
