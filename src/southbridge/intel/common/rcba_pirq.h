@@ -4,6 +4,7 @@
 #define SOUTHBRIDGE_INTEL_COMMON_RCBA_PIRQ_H
 
 #include <device/device.h>
+#include <southbridge/intel/common/acpi_pirq_gen.h>
 
 /*
  * The DnnIR registers use common RCBA offsets across these chipsets:
@@ -27,5 +28,11 @@
 
 /* Generate an ACPI _PRT table for chipsets that use PIRQs exclusively */
 void intel_acpi_gen_def_acpi_pirq(const struct device *dev);
+
+/*
+ * Map a root-bus slot/pin to the PIRQ it is routed to: DxxIR-based for
+ * PCH slots 19-31, 1:1 for everything else (PEG, IGD, ...).
+ */
+enum pirq intel_rcba_route_pirq(u8 slot, enum pci_pin pci_pin);
 
 #endif /* SOUTHBRIDGE_INTEL_COMMON_RCBA_PIRQ_H */

@@ -18,9 +18,8 @@ static const u32 pirq_dir_route_reg[MAX_SLOT - MIN_SLOT + 1] = {
 	D26IR, D27IR, D28IR, D29IR, D30IR, D31IR,
 };
 
-static enum pirq map_pirq(const struct device *dev, const enum pci_pin pci_pin)
+enum pirq intel_rcba_route_pirq(const u8 slot, const enum pci_pin pci_pin)
 {
-	u8 slot = PCI_SLOT(dev->path.pci.devfn);
 	u8 shift = 4 * (pci_pin - PCI_INT_A);
 	u8 pirq;
 	u16 reg;
@@ -42,6 +41,11 @@ static enum pirq map_pirq(const struct device *dev, const enum pci_pin pci_pin)
 	pirq = (RCBA16(reg) >> shift) & 0x7;
 
 	return (enum pirq)(pirq + PIRQ_A);
+}
+
+static enum pirq map_pirq(const struct device *dev, const enum pci_pin pci_pin)
+{
+	return intel_rcba_route_pirq(PCI_SLOT(dev->path.pci.devfn), pci_pin);
 }
 
 void intel_acpi_gen_def_acpi_pirq(const struct device *lpc)
