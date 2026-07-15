@@ -8,6 +8,7 @@
 #include <device/mmio.h>
 #include <device/azalia_device.h>
 
+#include "chip.h"
 #include "pch.h"
 #include "hda_verb.h"
 
@@ -22,6 +23,7 @@ static void azalia_route_irq(struct device *dev)
 
 static void azalia_pch_init(struct device *dev, u8 *base)
 {
+	const struct southbridge_intel_lynxpoint_config *config = dev->chip_info;
 	u8 reg8;
 	u16 reg16;
 	u32 reg32;
@@ -74,8 +76,10 @@ static void azalia_pch_init(struct device *dev, u8 *base)
 	if (!pch_is_lp())
 		pci_and_config32(dev, 0xd0, ~(1 << 31));
 
-	// Docking not supported
-	pci_and_config8(dev, 0x4d, (u8)~(1 << 7)); // Docking Status
+	if (config && config->docking_supported)
+		pci_or_config8(dev, 0x4d, 1 << 7);
+	else
+		pci_and_config8(dev, 0x4d, (u8)~(1 << 7));
 
 	if (pch_is_lp()) {
 		reg16 = read32(base + 0x0012);

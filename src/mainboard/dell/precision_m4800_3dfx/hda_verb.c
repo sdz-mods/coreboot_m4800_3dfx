@@ -5,9 +5,8 @@
 const u32 cim_verb_data[] = {
 	0x10ec0292,	/* Codec Vendor / Device ID: Realtek */
 	0x102805cc,	/* Subsystem ID */
-	32,		/* Number of 4 dword sets */
+	13,		/* Number of 4 dword sets */
 	AZALIA_SUBVENDOR(0, 0x102805cc),
-	AZALIA_RESET(1),
 	AZALIA_PIN_CFG(0, 0x12, 0x90a60140),
 	AZALIA_PIN_CFG(0, 0x13, 0x411111f0),
 	AZALIA_PIN_CFG(0, 0x14, 0x90170110),
@@ -19,6 +18,11 @@ const u32 cim_verb_data[] = {
 	AZALIA_PIN_CFG(0, 0x1b, 0x411111f0),
 	AZALIA_PIN_CFG(0, 0x1d, 0x40700001),
 	AZALIA_PIN_CFG(0, 0x1e, 0x411111f0),
+	/* Match the OEM dock DAI configuration. */
+	0x0205000a,
+	0x02040f81,
+	0x0205000a,
+	0x02040f81,
 };
 
 const u32 pc_beep_verbs[0] = {};
