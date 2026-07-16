@@ -117,12 +117,14 @@ The following table records configurations tested with this firmware.
 | SATA ODD | Confirmed | Confirmed | Confirmed |
 | mSATA | Confirmed[^1] | Confirmed[^1] | Confirmed[^1] |
 | HDA audio | Confirmed | Confirmed | Confirmed |
-| Ethernet | X | Confirmed | Confirmed |
+| Laptop headphone jack | Confirmed[^5] | Confirmed | Confirmed |
+| Ethernet | Confirmed[^6] | Confirmed | Confirmed |
 | Wi-Fi and Bluetooth | X | Confirmed | Confirmed |
 | SD card reader | X | Confirmed | Confirmed |
 | ExpressCard slot | Confirmed | Confirmed | Confirmed |
 | Internal keyboard and touchpad | Confirmed | Confirmed | Confirmed |
 | Keyboard lock LEDs | Confirmed | Confirmed | Confirmed |
+| Media keys (volume up/down and mute) | Confirmed[^7] | Confirmed | Confirmed |
 | RTC date and time | Confirmed | Confirmed | Confirmed |
 | ACPI | Confirmed | Confirmed | Confirmed |
 | AC adapter and battery state | Confirmed | Confirmed | Confirmed |
@@ -135,12 +137,12 @@ The following table records configurations tested with this firmware.
 | Docking-station USB 3.0 | X | Confirmed | Confirmed |
 | Docking-station PS/2 mouse | Confirmed | Confirmed | Confirmed |
 | Docking-station PS/2 keyboard | Confirmed | Confirmed | Confirmed |
-| Docking-station Ethernet | X | Confirmed | Confirmed |
+| Docking-station Ethernet | Confirmed[^6] | Confirmed | Confirmed |
 | Docking-station power button | Confirmed | Confirmed | Confirmed |
 | Docking-station DVI/DP | X | X | X |
 | Docking-station COM port | X | X | X |
 | Docking-station parallel port | X | X | X |
-| Docking-station audio jacks | - | - | - |
+| Docking-station headphone jack | Confirmed[^5] | Confirmed | Confirmed |
 | Docking-station eSATA | -[^4] | -[^4] | -[^4] |
 | DisplayPort and HDMI output | X | X | X |
 | Internal panel | Confirmed | Confirmed | Confirmed[^3] |
@@ -162,6 +164,14 @@ supported by that operating system.
       resolution. Linux testing uses a patched driver that corrects the PLL
       programming.
 [^4]: eSATA likely works, but no eSATA device was available for testing.
+[^5]: Under Windows 98, the laptop and docking-station headphone jacks
+      currently require the [sdz-mods/WDMHDA](https://github.com/sdz-mods/WDMHDA)
+      driver fork.
+[^6]: Under Windows 98, the internal and docking-station Ethernet interfaces
+      require the [sdz-mods/I217-LM_W98](https://github.com/sdz-mods/I217-LM_W98)
+      driver.
+[^7]: Under Windows 98, the volume up, volume down, and mute media keys require
+      [sdz-mods/MKB98](https://github.com/sdz-mods/MKB98).
 
 ## Setup Utility
 
