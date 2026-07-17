@@ -111,13 +111,16 @@ index 1effd802..c7fe49b9 100644
  }
  
  
-@@ -681,6 +735,135 @@ get_keystroke(int msec)
+@@ -681,6 +735,138 @@ get_keystroke(int msec)
   ****************************************************************/
  
  #define DEFAULT_BOOTMENU_WAIT 2500
 +#define SETUP_MENU_KEY 0x53
 +#define SETUP_3DFX_RESET_KEY	'R'
 +#define SETUP_3DFX_RESET_KEY_LOWER	'r'
++#define SETUP_3DFX_CMD_PREFIX	0x7f
++#define SETUP_3DFX_CMD_SCALER_FULLSCREEN	0x10
++#define SETUP_3DFX_CMD_SCALER_DOS_ASPECT	0x11
 +#define SETUP_CMOS_SATA_MODE	52
 +#define SETUP_CMOS_HDA_DISABLE	52
 +#define SETUP_CMOS_TURBO_DISABLE	52
@@ -247,7 +250,7 @@ index 1effd802..c7fe49b9 100644
  
  static const char menuchars[] = {
      '1', '2', '3', '4', '5', '6', '7', '8', '9',
-@@ -690,36 +873,1771 @@ static const char menuchars[] = {
+@@ -690,36 +876,1786 @@ static const char menuchars[] = {
      'u', 'v', 'w', 'x', 'y', 'z'
  };
  
@@ -1006,6 +1009,21 @@ index 1effd802..c7fe49b9 100644
 +        | (mxm->m4800 && mxm->vsa_blank_fix_en ? 0x04 : 0);
 +    setup_3dfx_send_byte(mxm, mxm->brightness);
 +    setup_3dfx_send_byte(mxm, packet1);
++}
++
++static void
++setup_3dfx_set_scaler_dos_aspect(int enable)
++{
++    struct setup_3dfx_state mxm;
++
++    setup_3dfx_init(&mxm);
++    if (!mxm.present)
++        return;
++
++    setup_3dfx_send_byte(&mxm, SETUP_3DFX_CMD_PREFIX);
++    setup_3dfx_send_byte(&mxm, enable
++                         ? SETUP_3DFX_CMD_SCALER_DOS_ASPECT
++                         : SETUP_3DFX_CMD_SCALER_FULLSCREEN);
 +}
 +
 +static const char *
@@ -2042,3 +2060,23 @@ index 1effd802..c7fe49b9 100644
      if (scan_code != menukey)
          return;
  
+@@ -1905,7 +3591,9 @@ call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
+     // Set the magic number in ax and the boot drive in dl.
+     br.dl = bootdrv;
+     br.ax = 0xaa55;
++    setup_3dfx_set_scaler_dos_aspect(1);
+     farcall16(&br);
++    setup_3dfx_set_scaler_dos_aspect(0);
+ }
+ 
+ // Boot from a disk (either floppy or harddrive)
+@@ -1977,7 +3664,9 @@ boot_cbfs(struct cbfs_file *file)
+     if (!CONFIG_COREBOOT_FLASH)
+         return;
+     printf("Booting from CBFS...\n");
++    setup_3dfx_set_scaler_dos_aspect(1);
+     cbfs_run_payload(file);
++    setup_3dfx_set_scaler_dos_aspect(0);
+ }
+ 
+ // Boot from a BEV entry on an optionrom.
