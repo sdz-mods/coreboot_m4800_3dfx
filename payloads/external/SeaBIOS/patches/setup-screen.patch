@@ -1,5 +1,5 @@
 diff --git a/src/boot.c b/src/boot.c
-index 1effd802..c7fe49b9 100644
+index 1effd802..19676c43 100644
 --- a/src/boot.c
 +++ b/src/boot.c
 @@ -8,9 +8,12 @@
@@ -111,7 +111,7 @@ index 1effd802..c7fe49b9 100644
  }
  
  
-@@ -681,6 +735,138 @@ get_keystroke(int msec)
+@@ -681,6 +735,166 @@ get_keystroke(int msec)
   ****************************************************************/
  
  #define DEFAULT_BOOTMENU_WAIT 2500
@@ -121,6 +121,18 @@ index 1effd802..c7fe49b9 100644
 +#define SETUP_3DFX_CMD_PREFIX	0x7f
 +#define SETUP_3DFX_CMD_SCALER_FULLSCREEN	0x10
 +#define SETUP_3DFX_CMD_SCALER_DOS_ASPECT	0x11
++/* XIO register indices (host write = [index, value]; index MUST be < 0x80). */
++#define SETUP_REG_BACKLIGHT	0x00
++#define SETUP_REG_VCORE		0x01
++#define SETUP_REG_FBSIZE	0x02
++#define SETUP_REG_VSA_BLANK_FIX	0x03
++#define SETUP_REG_DOS43		0x10
++#define SETUP_REG_SHARPNESS	0x11
++#define SETUP_REG_CONTRAST	0x12
++#define SETUP_REG_PEAKING	0x13
++#define SETUP_REG_RGB_R		0x14
++#define SETUP_REG_RGB_G		0x15
++#define SETUP_REG_RGB_B		0x16
 +#define SETUP_CMOS_SATA_MODE	52
 +#define SETUP_CMOS_HDA_DISABLE	52
 +#define SETUP_CMOS_TURBO_DISABLE	52
@@ -138,7 +150,7 @@ index 1effd802..c7fe49b9 100644
 +#define SETUP_SATA2_DEFAULT	1
 +#define SETUP_BOOT_ORDER_DEFAULT	0
 +#define SETUP_BOOT_DELAY_DEFAULT	2
-+#define SETUP_BIOS_VERSION	"M4800-3DFX-0.1"
++#define SETUP_BIOS_VERSION	"M4800-3DFX-0.2"
 +
 +#define SETUP_ATTR_NORMAL	0x1f
 +#define SETUP_ATTR_SELECT	0x70
@@ -163,8 +175,9 @@ index 1effd802..c7fe49b9 100644
 +#define SETUP_MENU_ADVANCED	2
 +#define SETUP_MENU_BOOT		3
 +#define SETUP_MENU_3DFX		4
-+#define SETUP_MENU_SAVE_EXIT	5
-+#define SETUP_MENU_COUNT	6
++#define SETUP_MENU_PANEL	5
++#define SETUP_MENU_SAVE_EXIT	6
++#define SETUP_MENU_COUNT	7
 +
 +#define SETUP_FOCUS_MENU	0
 +#define SETUP_FOCUS_PAGE	1
@@ -185,6 +198,7 @@ index 1effd802..c7fe49b9 100644
 +#define MXM_XIO2001_VENDOR	0x104c
 +#define MXM_XIO2001_DEVICE	0x8240
 +#define MXM_SSVID_3DFX		0x4444
++#define MXM_PROTO_VERSION	2
 +#define MXM_GPIO_DIR		0xb4
 +#define MXM_GPIO_DATA		0xb6
 +#define MXM_GPIO_00		0x1c
@@ -212,11 +226,25 @@ index 1effd802..c7fe49b9 100644
 +    u8 vcore_code;
 +    u8 fb64;
 +    u8 vsa_blank_fix_en;
++    /* scaler image settings (v2 protocol) */
++    u8 dos43;
++    u8 sharpness;
++    u8 contrast;
++    u8 peaking;
++    u8 rgb_r;
++    u8 rgb_g;
++    u8 rgb_b;
++    /* live telemetry / scaler status */
 +    u8 gpu_temp;
 +    u8 smc_temp;
 +    u8 fan_speed;
-+    u8 raw[5];
-+    int selected;
++    u8 scaler_link;
++    u8 scaler_lock;
++    u16 in_width;
++    u16 in_height;
++    u8 raw[20];
++    int selected;        /* cursor on the 3dfx (card) page */
++    int panel_selected;  /* cursor on the Panel (scaler) page */
 +};
 +
 +struct setup_datetime_state {
@@ -250,7 +278,7 @@ index 1effd802..c7fe49b9 100644
  
  static const char menuchars[] = {
      '1', '2', '3', '4', '5', '6', '7', '8', '9',
-@@ -690,36 +876,1786 @@ static const char menuchars[] = {
+@@ -690,36 +904,2015 @@ static const char menuchars[] = {
      'u', 'v', 'w', 'x', 'y', 'z'
  };
  
@@ -908,10 +936,23 @@ index 1effd802..c7fe49b9 100644
 +static void
 +setup_3dfx_defaults(struct setup_3dfx_state *mxm)
 +{
-+    mxm->brightness = 100;
 +    mxm->vcore_code = 1;
 +    mxm->fb64 = 0;
 +    mxm->vsa_blank_fix_en = 0;
++}
++
++/* Panel/scaler defaults (match the MSP + RTD firmware). */
++static void
++setup_panel_defaults(struct setup_3dfx_state *mxm)
++{
++    mxm->brightness = 100;
++    mxm->dos43 = 1;
++    mxm->sharpness = 2;
++    mxm->contrast = 40;
++    mxm->peaking = 0;
++    mxm->rgb_r = 50;
++    mxm->rgb_g = 50;
++    mxm->rgb_b = 50;
 +}
 +
 +static void
@@ -922,6 +963,7 @@ index 1effd802..c7fe49b9 100644
 +    mxm->display = "Unknown";
 +    mxm->revision = "Unknown";
 +    setup_3dfx_defaults(mxm);
++    setup_panel_defaults(mxm);
 +
 +    if (setup_3dfx_find_bridge(&mxm->bdf))
 +        return;
@@ -937,7 +979,7 @@ index 1effd802..c7fe49b9 100644
 +static void
 +setup_3dfx_read_settings(struct setup_3dfx_state *mxm)
 +{
-+    u8 packet[5];
++    u8 packet[20];
 +    int bit;
 +
 +    if (!mxm->present)
@@ -949,7 +991,7 @@ index 1effd802..c7fe49b9 100644
 +    pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, MXM_GPIO_11);
 +    msleep(200);
 +
-+    for (bit = 0; bit < 40; bit++) {
++    for (bit = 0; bit < (int)sizeof(packet) * 8; bit++) {
 +        u8 data;
 +        pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, MXM_GPIO_10);
 +        msleep(1);
@@ -961,21 +1003,41 @@ index 1effd802..c7fe49b9 100644
 +
 +    memcpy(mxm->raw, packet, sizeof(mxm->raw));
 +
-+    mxm->brightness = packet[0];
++    /*
++     * v2 read block (live data first). See mxm_protocol.h / the MSP
++     * monitor_update_host_response(). If the version byte does not match,
++     * leave the defaults in place rather than decoding garbage.
++     */
++    if (packet[0] != MXM_PROTO_VERSION)
++        return;
++
++    mxm->scaler_link = (packet[1] & 0x01) ? 1 : 0;
++    mxm->scaler_lock = (packet[1] & 0x02) ? 1 : 0;
++    mxm->in_width = packet[2] | ((u16)packet[3] << 8);
++    mxm->in_height = packet[4] | ((u16)packet[5] << 8);
++    mxm->gpu_temp = packet[6];
++    mxm->smc_temp = packet[7];
++    mxm->fan_speed = packet[8];
++
++    mxm->brightness = packet[9];
 +    if (mxm->brightness < 10)
 +        mxm->brightness = 10;
 +    if (mxm->brightness > 100)
 +        mxm->brightness = 100;
 +
-+    mxm->vcore_code = packet[1] >> 4;
++    mxm->vcore_code = packet[10];
 +    if (mxm->vcore_code > 6)
 +        mxm->vcore_code = 1;
 +
-+    mxm->fb64 = mxm->m4800 ? ((packet[1] >> 3) & 1) : 0;
-+    mxm->vsa_blank_fix_en = mxm->m4800 ? ((packet[1] >> 2) & 1) : 1;
-+    mxm->gpu_temp = packet[2];
-+    mxm->smc_temp = packet[3];
-+    mxm->fan_speed = packet[4];
++    mxm->fb64 = mxm->m4800 ? (packet[11] ? 1 : 0) : 0;
++    mxm->vsa_blank_fix_en = mxm->m4800 ? (packet[12] ? 1 : 0) : 1;
++    mxm->dos43 = packet[13] ? 1 : 0;
++    mxm->sharpness = packet[14] > 4 ? 4 : packet[14];
++    mxm->contrast = packet[15] > 100 ? 100 : packet[15];
++    mxm->peaking = packet[16] > 100 ? 100 : packet[16];
++    mxm->rgb_r = packet[17] > 100 ? 100 : packet[17];
++    mxm->rgb_g = packet[18] > 100 ? 100 : packet[18];
++    mxm->rgb_b = packet[19] > 100 ? 100 : packet[19];
 +}
 +
 +static void
@@ -996,19 +1058,44 @@ index 1effd802..c7fe49b9 100644
 +    }
 +}
 +
++/* v2 write transaction is [index, value]; index MSB (0) selects a write */
++static void
++setup_3dfx_write_reg(struct setup_3dfx_state *mxm, u8 index, u8 value)
++{
++    setup_3dfx_send_byte(mxm, index);
++    setup_3dfx_send_byte(mxm, value);
++}
++
++/* 3dfx (card) page: core voltage, framebuffer size, blank fix */
 +static void
 +setup_3dfx_write_settings(struct setup_3dfx_state *mxm)
 +{
-+    u8 packet1;
-+
 +    if (!mxm->present)
 +        return;
 +
-+    packet1 = (mxm->vcore_code << 4)
-+        | (mxm->m4800 && mxm->fb64 ? 0x08 : 0)
-+        | (mxm->m4800 && mxm->vsa_blank_fix_en ? 0x04 : 0);
-+    setup_3dfx_send_byte(mxm, mxm->brightness);
-+    setup_3dfx_send_byte(mxm, packet1);
++    setup_3dfx_write_reg(mxm, SETUP_REG_VCORE, mxm->vcore_code);
++    if (mxm->m4800) {
++        setup_3dfx_write_reg(mxm, SETUP_REG_FBSIZE, mxm->fb64 ? 1 : 0);
++        setup_3dfx_write_reg(mxm, SETUP_REG_VSA_BLANK_FIX,
++                             mxm->vsa_blank_fix_en ? 1 : 0);
++    }
++}
++
++/* Panel (scaler) page: backlight + scaler image settings */
++static void
++setup_panel_write_settings(struct setup_3dfx_state *mxm)
++{
++    if (!mxm->present)
++        return;
++
++    setup_3dfx_write_reg(mxm, SETUP_REG_BACKLIGHT, mxm->brightness);
++    setup_3dfx_write_reg(mxm, SETUP_REG_DOS43, mxm->dos43 ? 1 : 0);
++    setup_3dfx_write_reg(mxm, SETUP_REG_SHARPNESS, mxm->sharpness);
++    setup_3dfx_write_reg(mxm, SETUP_REG_CONTRAST, mxm->contrast);
++    setup_3dfx_write_reg(mxm, SETUP_REG_PEAKING, mxm->peaking);
++    setup_3dfx_write_reg(mxm, SETUP_REG_RGB_R, mxm->rgb_r);
++    setup_3dfx_write_reg(mxm, SETUP_REG_RGB_G, mxm->rgb_g);
++    setup_3dfx_write_reg(mxm, SETUP_REG_RGB_B, mxm->rgb_b);
 +}
 +
 +static void
@@ -1051,6 +1138,12 @@ index 1effd802..c7fe49b9 100644
 +}
 +
 +static const char *
++setup_dos43_name(const struct setup_3dfx_state *mxm)
++{
++    return mxm->dos43 ? "Enabled" : "Disabled";
++}
++
++static const char *
 +setup_3dfx_pci_speed_name(const struct setup_3dfx_state *mxm)
 +{
 +    return mxm->present ? "66 MHz" : "Unknown";
@@ -1067,7 +1160,9 @@ index 1effd802..c7fe49b9 100644
 +    setup_3dfx_init(&mxm);
 +    if (mxm.present) {
 +        setup_3dfx_defaults(&mxm);
++        setup_panel_defaults(&mxm);
 +        setup_3dfx_write_settings(&mxm);
++        setup_panel_write_settings(&mxm);
 +    }
 +
 +    setup_reboot();
@@ -1200,13 +1295,15 @@ index 1effd802..c7fe49b9 100644
 +static void
 +setup_draw_tabs(int current_menu, int focus)
 +{
++    /* 7 tabs, equal text-to-text spacing (4 cols between words), centered */
 +    setup_draw_frame_row(3, SETUP_ATTR_NORMAL);
 +    setup_draw_menu_item(7, " Info ", SETUP_MENU_INFO, current_menu, focus);
-+    setup_draw_menu_item(17, " Main ", SETUP_MENU_MAIN, current_menu, focus);
-+    setup_draw_menu_item(27, " Advanced ", SETUP_MENU_ADVANCED, current_menu, focus);
-+    setup_draw_menu_item(41, " Boot ", SETUP_MENU_BOOT, current_menu, focus);
-+    setup_draw_menu_item(51, " 3dfx ", SETUP_MENU_3DFX, current_menu, focus);
-+    setup_draw_menu_item(61, " Save & Exit ", SETUP_MENU_SAVE_EXIT, current_menu, focus);
++    setup_draw_menu_item(15, " Main ", SETUP_MENU_MAIN, current_menu, focus);
++    setup_draw_menu_item(23, " Advanced ", SETUP_MENU_ADVANCED, current_menu, focus);
++    setup_draw_menu_item(35, " Boot ", SETUP_MENU_BOOT, current_menu, focus);
++    setup_draw_menu_item(43, " 3dfx ", SETUP_MENU_3DFX, current_menu, focus);
++    setup_draw_menu_item(51, " Panel ", SETUP_MENU_PANEL, current_menu, focus);
++    setup_draw_menu_item(60, " Save & Exit ", SETUP_MENU_SAVE_EXIT, current_menu, focus);
 +}
 +
 +static void
@@ -1452,16 +1549,14 @@ index 1effd802..c7fe49b9 100644
 +setup_draw_3dfx_page(const struct setup_3dfx_state *mxm, int focus)
 +{
 +    char value[24];
-+    u8 brightness_attr = mxm->selected == 0 && focus == SETUP_FOCUS_PAGE
-+        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
-+    u8 vcore_attr = mxm->selected == 1 && focus == SETUP_FOCUS_PAGE
++    u8 vcore_attr = mxm->selected == 0 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
 +    u8 fb_attr = mxm->m4800
-+        ? (mxm->selected == 2 && focus == SETUP_FOCUS_PAGE
++        ? (mxm->selected == 1 && focus == SETUP_FOCUS_PAGE
 +           ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL)
 +        : SETUP_ATTR_DISABLED;
 +    u8 blank_fix_attr = mxm->m4800
-+        ? (mxm->selected == 3 && focus == SETUP_FOCUS_PAGE
++        ? (mxm->selected == 2 && focus == SETUP_FOCUS_PAGE
 +           ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL)
 +        : SETUP_ATTR_DISABLED;
 +
@@ -1482,23 +1577,63 @@ index 1effd802..c7fe49b9 100644
 +    setup_draw_3dfx_row(11, "PCI Bus Speed", setup_3dfx_pci_speed_name(mxm),
 +                         SETUP_ATTR_DISABLED);
 +
-+    snprintf(value, sizeof(value), "%u %%", mxm->brightness);
-+    setup_draw_3dfx_row(13, "Panel Backlight", value, brightness_attr);
 +    snprintf(value, sizeof(value), "%u.%u0 V", (mxm->vcore_code + 25) / 10,
 +             (mxm->vcore_code + 25) % 10);
-+    setup_draw_3dfx_row(14, "Core Voltage", value, vcore_attr);
-+    setup_draw_3dfx_row(15, "Framebuffer Memory", setup_3dfx_fb_name(mxm), fb_attr);
-+    setup_draw_3dfx_row(16, mxm->m4800 ? "VSA NT Blank Fix" : "Avenger Blank Fix",
++    setup_draw_3dfx_row(13, "Core Voltage", value, vcore_attr);
++    setup_draw_3dfx_row(14, "Framebuffer Memory", setup_3dfx_fb_name(mxm), fb_attr);
++    setup_draw_3dfx_row(15, mxm->m4800 ? "VSA NT Blank Fix" : "Avenger Blank Fix",
 +                         setup_3dfx_vsa_blank_fix_name(mxm), blank_fix_attr);
 +
 +    snprintf(value, sizeof(value), "%u C", mxm->gpu_temp);
-+    setup_draw_3dfx_row(18, "GPU Temperature", value, SETUP_ATTR_DISABLED);
++    setup_draw_3dfx_row(17, "GPU Temperature", value, SETUP_ATTR_DISABLED);
 +    snprintf(value, sizeof(value), "%u C", mxm->smc_temp);
-+    setup_draw_3dfx_row(19, "SMC Temperature", value, SETUP_ATTR_DISABLED);
++    setup_draw_3dfx_row(18, "SMC Temperature", value, SETUP_ATTR_DISABLED);
 +    snprintf(value, sizeof(value), "%u %%", mxm->fan_speed);
-+    setup_draw_3dfx_row(20, "Fan Speed", value, SETUP_ATTR_DISABLED);
++    setup_draw_3dfx_row(19, "Fan Speed", value, SETUP_ATTR_DISABLED);
 +    setup_3dfx_raw_name(mxm, value, sizeof(value));
-+    setup_draw_3dfx_row(21, "Raw Packet", value, SETUP_ATTR_DISABLED);
++    setup_draw_3dfx_row(20, "Raw Packet", value, SETUP_ATTR_DISABLED);
++
++    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Apply  ESC Reboot  Left/Right Change");
++}
++
++static void
++setup_draw_panel_page(const struct setup_3dfx_state *mxm, int focus)
++{
++    char value[24];
++    u8 attr[8];
++    int i;
++
++    for (i = 0; i < 8; i++)
++        attr[i] = mxm->panel_selected == i && focus == SETUP_FOCUS_PAGE
++            ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++
++    setup_clear_page();
++
++    if (!mxm->present) {
++        setup_draw_3dfx_row(8, "Card", mxm->model, SETUP_ATTR_DISABLED);
++        setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Apply  ESC Reboot");
++        return;
++    }
++
++    snprintf(value, sizeof(value), "%u %%", mxm->brightness);
++    setup_draw_value_row(6, "Panel Backlight", value, SETUP_ATTR_NORMAL, attr[0]);
++
++    setup_draw_value_row(8, "Force 4:3 for DOS modes", setup_dos43_name(mxm),
++                         SETUP_ATTR_NORMAL, attr[1]);
++    snprintf(value, sizeof(value), "%u", mxm->sharpness);
++    setup_draw_value_row(9, "Sharpness", value, SETUP_ATTR_NORMAL, attr[2]);
++    snprintf(value, sizeof(value), "%u", mxm->contrast);
++    setup_draw_value_row(10, "Contrast", value, SETUP_ATTR_NORMAL, attr[3]);
++    snprintf(value, sizeof(value), "%u", mxm->peaking);
++    setup_draw_value_row(11, "Peaking (edge enhance)", value,
++                         SETUP_ATTR_NORMAL, attr[4]);
++
++    snprintf(value, sizeof(value), "%u", mxm->rgb_r);
++    setup_draw_value_row(13, "White Balance R", value, SETUP_ATTR_NORMAL, attr[5]);
++    snprintf(value, sizeof(value), "%u", mxm->rgb_g);
++    setup_draw_value_row(14, "White Balance G", value, SETUP_ATTR_NORMAL, attr[6]);
++    snprintf(value, sizeof(value), "%u", mxm->rgb_b);
++    setup_draw_value_row(15, "White Balance B", value, SETUP_ATTR_NORMAL, attr[7]);
 +
 +    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Apply  ESC Reboot  Left/Right Change");
 +}
@@ -1535,6 +1670,8 @@ index 1effd802..c7fe49b9 100644
 +        setup_draw_boot_page(boot, focus);
 +    else if (menu == SETUP_MENU_3DFX)
 +        setup_draw_3dfx_page(mxm, focus);
++    else if (menu == SETUP_MENU_PANEL)
++        setup_draw_panel_page(mxm, focus);
 +    else
 +        setup_draw_save_exit_page(save, focus);
 +}
@@ -1613,18 +1750,12 @@ index 1effd802..c7fe49b9 100644
 +                line2 = "Card settings cannot be changed.";
 +                line3 = "";
 +            } else if (mxm->selected == 0) {
-+                title = "Panel Backlight";
-+                line1 = "Sets the MXM card panel backlight level.";
-+                line2 = "This value is stored on the MXM card.";
-+                line3 = "";
-+                action = "Press F10 to apply to the card.";
-+            } else if (mxm->selected == 1) {
 +                title = "Core Voltage";
 +                line1 = "Sets the MXM card GPU core voltage.";
 +                line2 = "This value is stored on the MXM card.";
 +                line3 = "If video fails, spam R at boot to reset settings.";
 +                action = "Press F10 to apply to the card.";
-+            } else if (mxm->selected == 2) {
++            } else if (mxm->selected == 1) {
 +                title = "Framebuffer Memory";
 +                line1 = "Selects 32 MB or 64 MB framebuffer on M4800.";
 +                line2 = "This value is stored on the MXM card.";
@@ -1638,6 +1769,39 @@ index 1effd802..c7fe49b9 100644
 +                                   : "This value is not user-selectable.";
 +                line3 = mxm->m4800 ? "This value is stored on the MXM card." : "";
 +                action = mxm->m4800 ? "Press F10 to apply to the card." : "";
++            }
++        } else if (menu == SETUP_MENU_PANEL) {
++            if (!mxm->present) {
++                title = "Panel and Scaler";
++                line1 = "No supported 3dfx MXM card was detected.";
++                line2 = "Panel settings cannot be changed.";
++                line3 = "";
++            } else if (mxm->panel_selected == 0) {
++                title = "Panel Backlight";
++                line1 = "Sets the MXM card panel backlight level.";
++                line2 = "This value is stored on the MXM card.";
++                line3 = "";
++                action = "Press F10 to apply to the card.";
++            } else if (mxm->panel_selected == 1) {
++                title = "Force 4:3 for DOS modes";
++                line1 = "Pillarboxes narrow DOS modes to their 4:3 shape";
++                line2 = "instead of stretching. SeaBIOS always stretches at";
++                line3 = "boot; this applies once the OS takes over.";
++                action = "Press F10 to apply to the card.";
++            } else if (mxm->panel_selected >= 2 && mxm->panel_selected <= 4) {
++                title = mxm->panel_selected == 2 ? "Sharpness"
++                      : mxm->panel_selected == 3 ? "Contrast"
++                      : "Peaking (edge enhance)";
++                line1 = "Adjusts the scaler image processing.";
++                line2 = "Sharpness 0-4; Contrast and Peaking 0-100.";
++                line3 = "This value is stored on the MXM card.";
++                action = "Press F10 to apply to the card.";
++            } else {
++                title = "White Balance";
++                line1 = "Per-channel white balance, 0-100 (50 is neutral).";
++                line2 = "All three channels apply together.";
++                line3 = "This value is stored on the MXM card.";
++                action = "Press F10 to apply to the card.";
 +            }
 +        } else if (menu == SETUP_MENU_SAVE_EXIT) {
 +            title = "Save and Exit";
@@ -1930,6 +2094,104 @@ index 1effd802..c7fe49b9 100644
 +            continue;
 +        }
 +
++        if (menu == SETUP_MENU_PANEL) {
++            int max_selected = 7;
++
++            if (scan_code == SETUP_KEY_UP || scan_code == SETUP_KEY_DOWN) {
++                if (scan_code == SETUP_KEY_UP && mxm.panel_selected == 0) {
++                    focus = SETUP_FOCUS_MENU;
++                    setup_draw_current_page(menu, focus, &adv, &boot, &dt, &mxm, &save);
++                    continue;
++                }
++                if (scan_code == SETUP_KEY_UP)
++                    mxm.panel_selected = mxm.panel_selected == 0
++                        ? max_selected : mxm.panel_selected - 1;
++                else
++                    mxm.panel_selected = mxm.panel_selected == max_selected
++                        ? 0 : mxm.panel_selected + 1;
++                setup_draw_panel_page(&mxm, focus);
++                setup_clear_message();
++                continue;
++            }
++
++            if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_RIGHT
++                || scan_code == SETUP_KEY_MINUS || scan_code == SETUP_KEY_PLUS
++                || scan_code == SETUP_KEY_ENTER) {
++                int increase = scan_code != SETUP_KEY_MINUS && scan_code != SETUP_KEY_LEFT;
++
++                if (mxm.present) {
++                    switch (mxm.panel_selected) {
++                    case 0:
++                        if (increase && mxm.brightness < 100)
++                            mxm.brightness++;
++                        if (!increase && mxm.brightness > 10)
++                            mxm.brightness--;
++                        break;
++                    case 1:
++                        mxm.dos43 = !mxm.dos43;
++                        break;
++                    case 2:
++                        if (increase && mxm.sharpness < 4)
++                            mxm.sharpness++;
++                        if (!increase && mxm.sharpness > 0)
++                            mxm.sharpness--;
++                        break;
++                    case 3:
++                        if (increase && mxm.contrast < 100)
++                            mxm.contrast++;
++                        if (!increase && mxm.contrast > 0)
++                            mxm.contrast--;
++                        break;
++                    case 4:
++                        if (increase && mxm.peaking < 100)
++                            mxm.peaking++;
++                        if (!increase && mxm.peaking > 0)
++                            mxm.peaking--;
++                        break;
++                    case 5:
++                        if (increase && mxm.rgb_r < 100)
++                            mxm.rgb_r++;
++                        if (!increase && mxm.rgb_r > 0)
++                            mxm.rgb_r--;
++                        break;
++                    case 6:
++                        if (increase && mxm.rgb_g < 100)
++                            mxm.rgb_g++;
++                        if (!increase && mxm.rgb_g > 0)
++                            mxm.rgb_g--;
++                        break;
++                    default:
++                        if (increase && mxm.rgb_b < 100)
++                            mxm.rgb_b++;
++                        if (!increase && mxm.rgb_b > 0)
++                            mxm.rgb_b--;
++                        break;
++                    }
++                }
++                setup_draw_panel_page(&mxm, focus);
++                continue;
++            }
++
++            if (scan_code == SETUP_KEY_F9) {
++                if (mxm.present) {
++                    setup_panel_defaults(&mxm);
++                    setup_draw_panel_page(&mxm, focus);
++                    setup_message("Panel defaults loaded. Press F10 to apply to the MXM card.");
++                }
++                continue;
++            }
++
++            if (scan_code == SETUP_KEY_F10) {
++                if (mxm.present) {
++                    setup_panel_write_settings(&mxm);
++                    setup_draw_panel_page(&mxm, focus);
++                    setup_message("Panel settings applied to MXM card.");
++                }
++                continue;
++            }
++            continue;
++        }
++
 +        if (menu != SETUP_MENU_3DFX) {
 +            if (scan_code == SETUP_KEY_UP) {
 +                focus = SETUP_FOCUS_MENU;
@@ -1939,7 +2201,7 @@ index 1effd802..c7fe49b9 100644
 +        }
 +
 +        if (scan_code == SETUP_KEY_UP || scan_code == SETUP_KEY_DOWN) {
-+            int max_selected = mxm.m4800 ? 3 : 1;
++            int max_selected = mxm.m4800 ? 2 : 0;
 +            if (scan_code == SETUP_KEY_UP && mxm.selected == 0) {
 +                focus = SETUP_FOCUS_MENU;
 +                setup_draw_current_page(menu, focus, &adv, &boot, &dt, &mxm, &save);
@@ -1960,18 +2222,13 @@ index 1effd802..c7fe49b9 100644
 +            int increase = scan_code != SETUP_KEY_MINUS && scan_code != SETUP_KEY_LEFT;
 +
 +            if (mxm.present && mxm.selected == 0) {
-+                if (increase && mxm.brightness < 100)
-+                    mxm.brightness++;
-+                if (!increase && mxm.brightness > 10)
-+                    mxm.brightness--;
-+            } else if (mxm.present && mxm.selected == 1) {
 +                if (increase && mxm.vcore_code < 6)
 +                    mxm.vcore_code++;
 +                if (!increase && mxm.vcore_code > 0)
 +                    mxm.vcore_code--;
-+            } else if (mxm.present && mxm.m4800 && mxm.selected == 2) {
++            } else if (mxm.present && mxm.m4800 && mxm.selected == 1) {
 +                mxm.fb64 = !mxm.fb64;
-+            } else if (mxm.present && mxm.m4800 && mxm.selected == 3) {
++            } else if (mxm.present && mxm.m4800 && mxm.selected == 2) {
 +                mxm.vsa_blank_fix_en = !mxm.vsa_blank_fix_en;
 +            }
 +            setup_draw_3dfx_page(&mxm, focus);
@@ -2060,7 +2317,7 @@ index 1effd802..c7fe49b9 100644
      if (scan_code != menukey)
          return;
  
-@@ -1905,7 +3591,9 @@ call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
+@@ -871,7 +3064,9 @@ call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
      // Set the magic number in ax and the boot drive in dl.
      br.dl = bootdrv;
      br.ax = 0xaa55;
@@ -2070,7 +2327,7 @@ index 1effd802..c7fe49b9 100644
  }
  
  // Boot from a disk (either floppy or harddrive)
-@@ -1977,7 +3664,9 @@ boot_cbfs(struct cbfs_file *file)
+@@ -946,7 +3141,9 @@ boot_cbfs(struct cbfs_file *file)
      if (!CONFIG_COREBOOT_FLASH)
          return;
      printf("Booting from CBFS...\n");
