@@ -1,5 +1,5 @@
 diff --git a/src/boot.c b/src/boot.c
-index 1effd802..19676c43 100644
+index 1effd802..d48649ab 100644
 --- a/src/boot.c
 +++ b/src/boot.c
 @@ -8,9 +8,12 @@
@@ -111,7 +111,7 @@ index 1effd802..19676c43 100644
  }
  
  
-@@ -681,6 +735,166 @@ get_keystroke(int msec)
+@@ -681,6 +735,182 @@ get_keystroke(int msec)
   ****************************************************************/
  
  #define DEFAULT_BOOTMENU_WAIT 2500
@@ -133,6 +133,17 @@ index 1effd802..19676c43 100644
 +#define SETUP_REG_RGB_R		0x14
 +#define SETUP_REG_RGB_G		0x15
 +#define SETUP_REG_RGB_B		0x16
++#define SETUP_REG_FILTER_FAMILY	0x17
++#define SETUP_REG_FILTER_P1	0x18
++#define SETUP_REG_FILTER_P2	0x19
++/* scale-up FIR families (must match MSP fir_gen.h) */
++#define SETUP_FIR_FAM_MITCHELL	0
++#define SETUP_FIR_FAM_KEYS	1
++#define SETUP_FIR_FAM_GAUSS	2
++#define SETUP_FIR_FAM_LANCZOS	3
++#define SETUP_FIR_FAM_COUNT	4
++/* read block size: 20 base + family + p1[4] + p2[4] */
++#define SETUP_READ_BYTES	29
 +#define SETUP_CMOS_SATA_MODE	52
 +#define SETUP_CMOS_HDA_DISABLE	52
 +#define SETUP_CMOS_TURBO_DISABLE	52
@@ -150,7 +161,7 @@ index 1effd802..19676c43 100644
 +#define SETUP_SATA2_DEFAULT	1
 +#define SETUP_BOOT_ORDER_DEFAULT	0
 +#define SETUP_BOOT_DELAY_DEFAULT	2
-+#define SETUP_BIOS_VERSION	"M4800-3DFX-0.2"
++#define SETUP_BIOS_VERSION	"M4800-3DFX-0.3"
 +
 +#define SETUP_ATTR_NORMAL	0x1f
 +#define SETUP_ATTR_SELECT	0x70
@@ -194,6 +205,8 @@ index 1effd802..19676c43 100644
 +#define SETUP_KEY_DOWN		0x50
 +#define SETUP_KEY_F9		0x43
 +#define SETUP_KEY_F10		0x44
++#define SETUP_KEY_PGUP		0x49
++#define SETUP_KEY_PGDN		0x51
 +
 +#define MXM_XIO2001_VENDOR	0x104c
 +#define MXM_XIO2001_DEVICE	0x8240
@@ -228,12 +241,15 @@ index 1effd802..19676c43 100644
 +    u8 vsa_blank_fix_en;
 +    /* scaler image settings (v2 protocol) */
 +    u8 dos43;
-+    u8 sharpness;
 +    u8 contrast;
 +    u8 peaking;
 +    u8 rgb_r;
 +    u8 rgb_g;
 +    u8 rgb_b;
++    /* scale-up FIR filter: active family + per-family params (see fir_gen.h) */
++    u8 filter_family;
++    u8 filter_p1[SETUP_FIR_FAM_COUNT];
++    u8 filter_p2[SETUP_FIR_FAM_COUNT];
 +    /* live telemetry / scaler status */
 +    u8 gpu_temp;
 +    u8 smc_temp;
@@ -242,7 +258,7 @@ index 1effd802..19676c43 100644
 +    u8 scaler_lock;
 +    u16 in_width;
 +    u16 in_height;
-+    u8 raw[20];
++    u8 raw[SETUP_READ_BYTES];
 +    int selected;        /* cursor on the 3dfx (card) page */
 +    int panel_selected;  /* cursor on the Panel (scaler) page */
 +};
@@ -278,7 +294,7 @@ index 1effd802..19676c43 100644
  
  static const char menuchars[] = {
      '1', '2', '3', '4', '5', '6', '7', '8', '9',
-@@ -690,36 +904,2015 @@ static const char menuchars[] = {
+@@ -690,36 +920,2215 @@ static const char menuchars[] = {
      'u', 'v', 'w', 'x', 'y', 'z'
  };
  
@@ -941,18 +957,92 @@ index 1effd802..19676c43 100644
 +    mxm->vsa_blank_fix_en = 0;
 +}
 +
++/* ---- scale-up FIR filter UI metadata (mirrors the apps' fir_ui.h) ---- */
++static const char *const setup_fir_family_name[SETUP_FIR_FAM_COUNT] = {
++    "Mitchell-Netravali", "Keys cubic", "Gaussian", "Lanczos-2"
++};
++
++static int
++setup_fir_p1_max(int fam)
++{
++    if (fam == SETUP_FIR_FAM_GAUSS)
++        return 24;
++    if (fam == SETUP_FIR_FAM_LANCZOS)
++        return 0;
++    return 20;                 /* Mitchell B, Keys a */
++}
++
++static int
++setup_fir_p2_max(int fam)
++{
++    return fam == SETUP_FIR_FAM_MITCHELL ? 20 : 0;
++}
++
++static const char *
++setup_fir_p1_label(int fam)
++{
++    if (fam == SETUP_FIR_FAM_KEYS)
++        return "a";
++    if (fam == SETUP_FIR_FAM_GAUSS)
++        return "Sigma";
++    return "B";
++}
++
++static int
++setup_fir_clamp(int v, int max)
++{
++    if (v < 0)
++        return 0;
++    return v > max ? max : v;
++}
++
++/* step index -> parameter value in integer hundredths */
++static int
++setup_fir_p1_x100(int fam, int idx)
++{
++    if (fam == SETUP_FIR_FAM_KEYS)
++        return -100 + idx * 5;    /* -1.00..0.00 */
++    if (fam == SETUP_FIR_FAM_GAUSS)
++        return 30 + idx * 5;      /* 0.30..1.50 */
++    return idx * 5;               /* Mitchell B 0.00..1.00 */
++}
++
++/* format e.g. -0.45 into buf (needs 7 bytes); ranges are -1.00..+1.50 */
++static void
++setup_fir_fmt(int v100, char *buf)
++{
++    int a = v100 < 0 ? -v100 : v100;
++    char *p = buf;
++
++    if (v100 < 0)
++        *p++ = '-';
++    *p++ = '0' + a / 100;
++    *p++ = '.';
++    *p++ = '0' + (a % 100) / 10;
++    *p++ = '0' + a % 10;
++    *p = '\0';
++}
++
 +/* Panel/scaler defaults (match the MSP + RTD firmware). */
 +static void
 +setup_panel_defaults(struct setup_3dfx_state *mxm)
 +{
++    static const u8 def_p1[SETUP_FIR_FAM_COUNT] = { 8, 11, 4, 0 };
++    static const u8 def_p2[SETUP_FIR_FAM_COUNT] = { 11, 0, 0, 0 };
++    int f;
++
 +    mxm->brightness = 100;
 +    mxm->dos43 = 1;
-+    mxm->sharpness = 2;
 +    mxm->contrast = 40;
 +    mxm->peaking = 0;
 +    mxm->rgb_r = 50;
 +    mxm->rgb_g = 50;
 +    mxm->rgb_b = 50;
++    mxm->filter_family = SETUP_FIR_FAM_MITCHELL;
++    for (f = 0; f < SETUP_FIR_FAM_COUNT; f++) {
++        mxm->filter_p1[f] = def_p1[f];
++        mxm->filter_p2[f] = def_p2[f];
++    }
 +}
 +
 +static void
@@ -979,7 +1069,7 @@ index 1effd802..19676c43 100644
 +static void
 +setup_3dfx_read_settings(struct setup_3dfx_state *mxm)
 +{
-+    u8 packet[20];
++    u8 packet[SETUP_READ_BYTES];
 +    int bit;
 +
 +    if (!mxm->present)
@@ -1032,12 +1122,24 @@ index 1effd802..19676c43 100644
 +    mxm->fb64 = mxm->m4800 ? (packet[11] ? 1 : 0) : 0;
 +    mxm->vsa_blank_fix_en = mxm->m4800 ? (packet[12] ? 1 : 0) : 1;
 +    mxm->dos43 = packet[13] ? 1 : 0;
-+    mxm->sharpness = packet[14] > 4 ? 4 : packet[14];
++    /* packet[14] is the legacy sharpness slot (unused; filter owns sharpness) */
 +    mxm->contrast = packet[15] > 100 ? 100 : packet[15];
-+    mxm->peaking = packet[16] > 100 ? 100 : packet[16];
++    mxm->peaking = packet[16] > 30 ? 30 : packet[16];
 +    mxm->rgb_r = packet[17] > 100 ? 100 : packet[17];
 +    mxm->rgb_g = packet[18] > 100 ? 100 : packet[18];
 +    mxm->rgb_b = packet[19] > 100 ? 100 : packet[19];
++
++    mxm->filter_family = packet[20] < SETUP_FIR_FAM_COUNT
++        ? packet[20] : SETUP_FIR_FAM_MITCHELL;
++    {
++        int f;
++        for (f = 0; f < SETUP_FIR_FAM_COUNT; f++) {
++            mxm->filter_p1[f] = setup_fir_clamp(packet[21 + f],
++                                                setup_fir_p1_max(f));
++            mxm->filter_p2[f] = setup_fir_clamp(
++                packet[21 + SETUP_FIR_FAM_COUNT + f], setup_fir_p2_max(f));
++        }
++    }
 +}
 +
 +static void
@@ -1048,13 +1150,22 @@ index 1effd802..19676c43 100644
 +    pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, MXM_GPIO_00);
 +    msleep(1);
 +    for (bit = 7; bit >= 0; bit--) {
-+        if ((packet >> bit) & 1)
-+            pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, MXM_GPIO_11);
-+        else
-+            pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, MXM_GPIO_01);
++        /*
++         * Drive the data line FIRST with the clock low, let it settle, then
++         * raise the clock so the MSP samples a stable bit on the rising edge.
++         * Raising data and clock together (the old sequence) violates setup
++         * time and, across the many writes an Apply sends, occasionally clocks
++         * in a wrong bit -> frame desync -> wrong/dropped setting.
++         */
++        u8 lo = ((packet >> bit) & 1) ? MXM_GPIO_10 : MXM_GPIO_00; /* data, clk 0 */
++        u8 hi = ((packet >> bit) & 1) ? MXM_GPIO_11 : MXM_GPIO_01; /* data, clk 1 */
++
++        pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, lo);   /* set data (clk low) */
++        msleep(1);                                        /* setup time */
++        pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, hi);   /* clock rising edge */
 +        msleep(1);
-+        pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, MXM_GPIO_00);
-+        msleep(1);
++        pci_config_writeb(mxm->bdf, MXM_GPIO_DATA, lo);   /* clock low, data held */
++        msleep(1);                                        /* hold time */
 +    }
 +}
 +
@@ -1081,21 +1192,69 @@ index 1effd802..19676c43 100644
 +    }
 +}
 +
-+/* Panel (scaler) page: backlight + scaler image settings */
++/*
++ * Snapshot of what the card currently holds, so an Apply only writes the
++ * registers that actually changed. Fewer XIO writes = far less chance of a
++ * bit-level desync over the slow bit-banged link. Seeded from the read at
++ * setup entry (setup_panel_baseline_set) and refreshed after each Apply.
++ */
++static struct setup_3dfx_state g_panel_applied;
++
++static void
++setup_panel_baseline_set(const struct setup_3dfx_state *mxm)
++{
++    g_panel_applied = *mxm;
++}
++
++/* Panel (scaler) page: backlight + scaler image settings (changed regs only) */
 +static void
 +setup_panel_write_settings(struct setup_3dfx_state *mxm)
 +{
++    struct setup_3dfx_state *base = &g_panel_applied;
++    int f;
++    int touched = 0;
++
 +    if (!mxm->present)
 +        return;
 +
-+    setup_3dfx_write_reg(mxm, SETUP_REG_BACKLIGHT, mxm->brightness);
-+    setup_3dfx_write_reg(mxm, SETUP_REG_DOS43, mxm->dos43 ? 1 : 0);
-+    setup_3dfx_write_reg(mxm, SETUP_REG_SHARPNESS, mxm->sharpness);
-+    setup_3dfx_write_reg(mxm, SETUP_REG_CONTRAST, mxm->contrast);
-+    setup_3dfx_write_reg(mxm, SETUP_REG_PEAKING, mxm->peaking);
-+    setup_3dfx_write_reg(mxm, SETUP_REG_RGB_R, mxm->rgb_r);
-+    setup_3dfx_write_reg(mxm, SETUP_REG_RGB_G, mxm->rgb_g);
-+    setup_3dfx_write_reg(mxm, SETUP_REG_RGB_B, mxm->rgb_b);
++    if (mxm->brightness != base->brightness)
++        setup_3dfx_write_reg(mxm, SETUP_REG_BACKLIGHT, mxm->brightness);
++    if (mxm->dos43 != base->dos43)
++        setup_3dfx_write_reg(mxm, SETUP_REG_DOS43, mxm->dos43 ? 1 : 0);
++    /* legacy SETUP_REG_SHARPNESS is not written: it would clobber the FIR */
++    if (mxm->contrast != base->contrast)
++        setup_3dfx_write_reg(mxm, SETUP_REG_CONTRAST, mxm->contrast);
++    if (mxm->peaking != base->peaking)
++        setup_3dfx_write_reg(mxm, SETUP_REG_PEAKING, mxm->peaking);
++    if (mxm->rgb_r != base->rgb_r)
++        setup_3dfx_write_reg(mxm, SETUP_REG_RGB_R, mxm->rgb_r);
++    if (mxm->rgb_g != base->rgb_g)
++        setup_3dfx_write_reg(mxm, SETUP_REG_RGB_G, mxm->rgb_g);
++    if (mxm->rgb_b != base->rgb_b)
++        setup_3dfx_write_reg(mxm, SETUP_REG_RGB_B, mxm->rgb_b);
++
++    /*
++     * Filter params are per-family on the SMC. Push only families whose params
++     * changed (make it active, write P1/P2), then leave the SMC on the selected
++     * family. Lanczos has no params, so it is only ever set as active.
++     */
++    for (f = 0; f < SETUP_FIR_FAM_COUNT; f++) {
++        int dp1 = mxm->filter_p1[f] != base->filter_p1[f];
++        int dp2 = mxm->filter_p2[f] != base->filter_p2[f];
++
++        if (setup_fir_p1_max(f) == 0 || (!dp1 && !dp2))
++            continue;
++        setup_3dfx_write_reg(mxm, SETUP_REG_FILTER_FAMILY, f);
++        if (dp1)
++            setup_3dfx_write_reg(mxm, SETUP_REG_FILTER_P1, mxm->filter_p1[f]);
++        if (dp2 && setup_fir_p2_max(f) > 0)
++            setup_3dfx_write_reg(mxm, SETUP_REG_FILTER_P2, mxm->filter_p2[f]);
++        touched = 1;
++    }
++    if (touched || mxm->filter_family != base->filter_family)
++        setup_3dfx_write_reg(mxm, SETUP_REG_FILTER_FAMILY, mxm->filter_family);
++
++    *base = *mxm;   /* card now holds these; next Apply diffs against them */
 +}
 +
 +static void
@@ -1265,21 +1424,6 @@ index 1effd802..19676c43 100644
 +    writel(mmio + VSA_MISC_INIT1, misc1_orig);
 +    pci_config_writel(bdf, PCI_ROM_ADDRESS, rom_orig);
 +    pci_config_writew(bdf, PCI_COMMAND, command_orig);
-+}
-+
-+static void
-+setup_3dfx_raw_name(const struct setup_3dfx_state *mxm, char *buf, int len)
-+{
-+    static const char hex[] = "0123456789abcdef";
-+    int i;
-+
-+    memset(buf, 0, len);
-+    for (i = 0; i < 5 && (i * 3 + 2) < len; i++) {
-+        buf[i * 3 + 0] = hex[mxm->raw[i] >> 4];
-+        buf[i * 3 + 1] = hex[mxm->raw[i] & 0x0f];
-+        if (i != 4 && (i * 3 + 2) < len)
-+            buf[i * 3 + 2] = ' ';
-+    }
 +}
 +
 +static void
@@ -1590,8 +1734,6 @@ index 1effd802..19676c43 100644
 +    setup_draw_3dfx_row(18, "SMC Temperature", value, SETUP_ATTR_DISABLED);
 +    snprintf(value, sizeof(value), "%u %%", mxm->fan_speed);
 +    setup_draw_3dfx_row(19, "Fan Speed", value, SETUP_ATTR_DISABLED);
-+    setup_3dfx_raw_name(mxm, value, sizeof(value));
-+    setup_draw_3dfx_row(20, "Raw Packet", value, SETUP_ATTR_DISABLED);
 +
 +    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Apply  ESC Reboot  Left/Right Change");
 +}
@@ -1600,10 +1742,14 @@ index 1effd802..19676c43 100644
 +setup_draw_panel_page(const struct setup_3dfx_state *mxm, int focus)
 +{
 +    char value[24];
-+    u8 attr[8];
++    u8 attr[10];
 +    int i;
++    int fam = mxm->filter_family;
 +
-+    for (i = 0; i < 8; i++)
++    if (fam < 0 || fam >= SETUP_FIR_FAM_COUNT)
++        fam = SETUP_FIR_FAM_MITCHELL;
++
++    for (i = 0; i < 10; i++)
 +        attr[i] = mxm->panel_selected == i && focus == SETUP_FOCUS_PAGE
 +            ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
 +
@@ -1620,22 +1766,39 @@ index 1effd802..19676c43 100644
 +
 +    setup_draw_value_row(8, "Force 4:3 for DOS modes", setup_dos43_name(mxm),
 +                         SETUP_ATTR_NORMAL, attr[1]);
-+    snprintf(value, sizeof(value), "%u", mxm->sharpness);
-+    setup_draw_value_row(9, "Sharpness", value, SETUP_ATTR_NORMAL, attr[2]);
++
++    setup_draw_value_row(9, "Scaling Filter", setup_fir_family_name[fam],
++                         SETUP_ATTR_NORMAL, attr[2]);
++    if (setup_fir_p1_max(fam) > 0) {
++        char v1[8];
++        setup_fir_fmt(setup_fir_p1_x100(fam, mxm->filter_p1[fam]), v1);
++        snprintf(value, sizeof(value), "%s %s", setup_fir_p1_label(fam), v1);
++    } else {
++        snprintf(value, sizeof(value), "fixed kernel");
++    }
++    setup_draw_value_row(10, "Filter Parameter 1", value, SETUP_ATTR_NORMAL, attr[3]);
++    if (setup_fir_p2_max(fam) > 0) {
++        char v2[8];
++        setup_fir_fmt(mxm->filter_p2[fam] * 5, v2);
++        snprintf(value, sizeof(value), "C %s", v2);
++    } else {
++        snprintf(value, sizeof(value), "n/a");
++    }
++    setup_draw_value_row(11, "Filter Parameter 2", value, SETUP_ATTR_NORMAL, attr[4]);
++
 +    snprintf(value, sizeof(value), "%u", mxm->contrast);
-+    setup_draw_value_row(10, "Contrast", value, SETUP_ATTR_NORMAL, attr[3]);
++    setup_draw_value_row(12, "Contrast", value, SETUP_ATTR_NORMAL, attr[5]);
 +    snprintf(value, sizeof(value), "%u", mxm->peaking);
-+    setup_draw_value_row(11, "Peaking (edge enhance)", value,
-+                         SETUP_ATTR_NORMAL, attr[4]);
++    setup_draw_value_row(13, "Edge Enhance", value, SETUP_ATTR_NORMAL, attr[6]);
 +
 +    snprintf(value, sizeof(value), "%u", mxm->rgb_r);
-+    setup_draw_value_row(13, "White Balance R", value, SETUP_ATTR_NORMAL, attr[5]);
++    setup_draw_value_row(15, "White Balance R", value, SETUP_ATTR_NORMAL, attr[7]);
 +    snprintf(value, sizeof(value), "%u", mxm->rgb_g);
-+    setup_draw_value_row(14, "White Balance G", value, SETUP_ATTR_NORMAL, attr[6]);
++    setup_draw_value_row(16, "White Balance G", value, SETUP_ATTR_NORMAL, attr[8]);
 +    snprintf(value, sizeof(value), "%u", mxm->rgb_b);
-+    setup_draw_value_row(15, "White Balance B", value, SETUP_ATTR_NORMAL, attr[7]);
++    setup_draw_value_row(17, "White Balance B", value, SETUP_ATTR_NORMAL, attr[9]);
 +
-+    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Apply  ESC Reboot  Left/Right Change");
++    setup_footer("F1 Help  Tab Menu  F9 Def  F10 Apply  PgUp/PgDn Ends  Left/Right Change");
 +}
 +
 +static void
@@ -1788,12 +1951,22 @@ index 1effd802..19676c43 100644
 +                line2 = "instead of stretching. SeaBIOS always stretches at";
 +                line3 = "boot; this applies once the OS takes over.";
 +                action = "Press F10 to apply to the card.";
-+            } else if (mxm->panel_selected >= 2 && mxm->panel_selected <= 4) {
-+                title = mxm->panel_selected == 2 ? "Sharpness"
-+                      : mxm->panel_selected == 3 ? "Contrast"
-+                      : "Peaking (edge enhance)";
++            } else if (mxm->panel_selected == 2) {
++                title = "Scaling Filter";
++                line1 = "Kernel used to upscale to the panel. Mitchell is a";
++                line2 = "good default; Keys sharper; Gaussian soft; Lanczos-2";
++                line3 = "sharpest (rings most). Stored on the MXM card.";
++                action = "Press F10 to apply to the card.";
++            } else if (mxm->panel_selected == 3 || mxm->panel_selected == 4) {
++                title = "Filter Parameter";
++                line1 = "Shapes the scaling filter; each family keeps its own.";
++                line2 = "Lower/negative = sharper with ringing; higher = softer.";
++                line3 = "PgUp/PgDn jump to the ends. Stored on the MXM card.";
++                action = "Press F10 to apply to the card.";
++            } else if (mxm->panel_selected == 5 || mxm->panel_selected == 6) {
++                title = mxm->panel_selected == 5 ? "Contrast" : "Edge Enhance";
 +                line1 = "Adjusts the scaler image processing.";
-+                line2 = "Sharpness 0-4; Contrast and Peaking 0-100.";
++                line2 = "Contrast 0-100; Edge Enhance 0-30 (0 = off).";
 +                line3 = "This value is stored on the MXM card.";
 +                action = "Press F10 to apply to the card.";
 +            } else {
@@ -1839,6 +2012,7 @@ index 1effd802..19676c43 100644
 +    boot.selected = 0;
 +    setup_3dfx_init(&mxm);
 +    setup_3dfx_read_settings(&mxm);
++    setup_panel_baseline_set(&mxm);   /* Apply diffs against what was read */
 +    setup_read_datetime(&dt);
 +    dt.selected = 0;
 +    save.selected = 0;
@@ -2095,7 +2269,7 @@ index 1effd802..19676c43 100644
 +        }
 +
 +        if (menu == SETUP_MENU_PANEL) {
-+            int max_selected = 7;
++            int max_selected = 9;
 +
 +            if (scan_code == SETUP_KEY_UP || scan_code == SETUP_KEY_DOWN) {
 +                if (scan_code == SETUP_KEY_UP && mxm.panel_selected == 0) {
@@ -2120,6 +2294,7 @@ index 1effd802..19676c43 100644
 +                int increase = scan_code != SETUP_KEY_MINUS && scan_code != SETUP_KEY_LEFT;
 +
 +                if (mxm.present) {
++                    int fam = mxm.filter_family;
 +                    switch (mxm.panel_selected) {
 +                    case 0:
 +                        if (increase && mxm.brightness < 100)
@@ -2131,30 +2306,46 @@ index 1effd802..19676c43 100644
 +                        mxm.dos43 = !mxm.dos43;
 +                        break;
 +                    case 2:
-+                        if (increase && mxm.sharpness < 4)
-+                            mxm.sharpness++;
-+                        if (!increase && mxm.sharpness > 0)
-+                            mxm.sharpness--;
++                        if (increase)
++                            mxm.filter_family = (fam + 1)
++                                % SETUP_FIR_FAM_COUNT;
++                        else
++                            mxm.filter_family = (fam + SETUP_FIR_FAM_COUNT - 1)
++                                % SETUP_FIR_FAM_COUNT;
 +                        break;
 +                    case 3:
++                        if (increase
++                            && mxm.filter_p1[fam] < setup_fir_p1_max(fam))
++                            mxm.filter_p1[fam]++;
++                        if (!increase && mxm.filter_p1[fam] > 0)
++                            mxm.filter_p1[fam]--;
++                        break;
++                    case 4:
++                        if (increase
++                            && mxm.filter_p2[fam] < setup_fir_p2_max(fam))
++                            mxm.filter_p2[fam]++;
++                        if (!increase && mxm.filter_p2[fam] > 0)
++                            mxm.filter_p2[fam]--;
++                        break;
++                    case 5:
 +                        if (increase && mxm.contrast < 100)
 +                            mxm.contrast++;
 +                        if (!increase && mxm.contrast > 0)
 +                            mxm.contrast--;
 +                        break;
-+                    case 4:
-+                        if (increase && mxm.peaking < 100)
++                    case 6:
++                        if (increase && mxm.peaking < 30)
 +                            mxm.peaking++;
 +                        if (!increase && mxm.peaking > 0)
 +                            mxm.peaking--;
 +                        break;
-+                    case 5:
++                    case 7:
 +                        if (increase && mxm.rgb_r < 100)
 +                            mxm.rgb_r++;
 +                        if (!increase && mxm.rgb_r > 0)
 +                            mxm.rgb_r--;
 +                        break;
-+                    case 6:
++                    case 8:
 +                        if (increase && mxm.rgb_g < 100)
 +                            mxm.rgb_g++;
 +                        if (!increase && mxm.rgb_g > 0)
@@ -2166,6 +2357,31 @@ index 1effd802..19676c43 100644
 +                        if (!increase && mxm.rgb_b > 0)
 +                            mxm.rgb_b--;
 +                        break;
++                    }
++                }
++                setup_draw_panel_page(&mxm, focus);
++                continue;
++            }
++
++            if (scan_code == SETUP_KEY_PGUP || scan_code == SETUP_KEY_PGDN) {
++                int to_max = scan_code == SETUP_KEY_PGUP;
++
++                if (mxm.present) {
++                    int fam = mxm.filter_family;
++                    switch (mxm.panel_selected) {
++                    case 0: mxm.brightness = to_max ? 100 : 10; break;
++                    case 2: mxm.filter_family =
++                        to_max ? SETUP_FIR_FAM_COUNT - 1 : 0; break;
++                    case 3: mxm.filter_p1[fam] =
++                        to_max ? setup_fir_p1_max(fam) : 0; break;
++                    case 4: mxm.filter_p2[fam] =
++                        to_max ? setup_fir_p2_max(fam) : 0; break;
++                    case 5: mxm.contrast = to_max ? 100 : 0; break;
++                    case 6: mxm.peaking = to_max ? 30 : 0; break;
++                    case 7: mxm.rgb_r = to_max ? 100 : 0; break;
++                    case 8: mxm.rgb_g = to_max ? 100 : 0; break;
++                    case 9: mxm.rgb_b = to_max ? 100 : 0; break;
++                    default: break;
 +                    }
 +                }
 +                setup_draw_panel_page(&mxm, focus);
@@ -2317,7 +2533,7 @@ index 1effd802..19676c43 100644
      if (scan_code != menukey)
          return;
  
-@@ -871,7 +3064,9 @@ call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
+@@ -871,7 +3280,9 @@ call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
      // Set the magic number in ax and the boot drive in dl.
      br.dl = bootdrv;
      br.ax = 0xaa55;
@@ -2327,7 +2543,7 @@ index 1effd802..19676c43 100644
  }
  
  // Boot from a disk (either floppy or harddrive)
-@@ -946,7 +3141,9 @@ boot_cbfs(struct cbfs_file *file)
+@@ -946,7 +3357,9 @@ boot_cbfs(struct cbfs_file *file)
      if (!CONFIG_COREBOOT_FLASH)
          return;
      printf("Booting from CBFS...\n");
