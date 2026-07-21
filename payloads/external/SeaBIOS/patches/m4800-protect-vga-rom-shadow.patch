@@ -1,16 +1,8 @@
 diff --git a/src/optionroms.c b/src/optionroms.c
-index e906ab97..68e382ce 100644
+index e906ab97..ce92930e 100644
 --- a/src/optionroms.c
 +++ b/src/optionroms.c
-@@ -22,6 +22,7 @@
- #include "string.h" // memset
- #include "util.h" // get_pnp_offset
- #include "tcgbios.h" // tpm_*
-+#include "x86.h" // __cpuid, cr0_*, rdmsr, wbinvd, wrmsr
- 
- static int EnforceChecksum, S3ResumeVga, RunPCIroms;
- 
-@@ -446,6 +447,122 @@ static void try_setup_display_other(void)
+@@ -446,6 +446,58 @@ static void try_setup_display_other(void)
      }
  }
  
@@ -18,69 +10,6 @@ index e906ab97..68e382ce 100644
 +#define INTEL_VENDOR_ID                0x8086
 +#define INTEL_HASWELL_PAM1             0x81
 +#define LEGACY_SHADOW_PROTECT_END      0xe0000
-+#define IA32_MTRR_CAP                  0x000000fe
-+#define IA32_MTRR_DEF_TYPE             0x000002ff
-+#define IA32_MTRR_FIX4K_C0000          0x00000268
-+#define MTRR_CAP_FIX                   (1ULL << 8)
-+#define MTRR_DEF_TYPE_FE               (1ULL << 10)
-+#define MTRR_DEF_TYPE_E                (1ULL << 11)
-+#define MTRR_TYPE_UC                   0x00
-+
-+static int
-+cpu_has_fixed_mtrrs(void)
-+{
-+    u32 eax, ebx, ecx, edx;
-+
-+    __cpuid(1, &eax, &ebx, &ecx, &edx);
-+    if ((edx & (CPUID_MSR | CPUID_MTRR)) != (CPUID_MSR | CPUID_MTRR))
-+        return 0;
-+
-+    u64 cap = rdmsr(IA32_MTRR_CAP);
-+    u64 def_type = rdmsr(IA32_MTRR_DEF_TYPE);
-+    return (cap & MTRR_CAP_FIX) && (def_type & MTRR_DEF_TYPE_FE);
-+}
-+
-+static void
-+set_legacy_shadow_mtrr_uc(u32 start, u32 end)
-+{
-+    if (!cpu_has_fixed_mtrrs())
-+        return;
-+
-+    start = ALIGN_DOWN(start, 4096);
-+    end = ALIGN(end, 4096);
-+    if (start < BUILD_ROM_START)
-+        start = BUILD_ROM_START;
-+    if (end > BUILD_BIOS_ADDR)
-+        end = BUILD_BIOS_ADDR;
-+    if (start >= end)
-+        return;
-+
-+    u32 flags = save_flags();
-+    irq_disable();
-+
-+    u32 cr0 = cr0_read();
-+    cr0_write((cr0 | CR0_CD) & ~CR0_NW);
-+    wbinvd();
-+
-+    u64 def_type = rdmsr(IA32_MTRR_DEF_TYPE);
-+    wrmsr(IA32_MTRR_DEF_TYPE, def_type & ~MTRR_DEF_TYPE_E);
-+
-+    u32 addr;
-+    for (addr = start; addr < end; addr += 4096) {
-+        u32 index = (addr - BUILD_ROM_START) / 4096;
-+        u32 msr = IA32_MTRR_FIX4K_C0000 + index / 8;
-+        u32 shift = (index & 7) * 8;
-+        u64 val = rdmsr(msr);
-+        val &= ~(0xffULL << shift);
-+        val |= (u64)MTRR_TYPE_UC << shift;
-+        wrmsr(msr, val);
-+    }
-+
-+    wrmsr(IA32_MTRR_DEF_TYPE, def_type);
-+    wbinvd();
-+    cr0_write(cr0);
-+    restore_flags(flags);
-+}
 +
 +static void
 +write_protect_legacy_shadow_pam(u32 start, u32 end)
@@ -126,7 +55,6 @@ index e906ab97..68e382ce 100644
 +    if (end < LEGACY_SHADOW_PROTECT_END)
 +        end = LEGACY_SHADOW_PROTECT_END;
 +
-+    set_legacy_shadow_mtrr_uc(start, end);
 +    write_protect_legacy_shadow_pam(start, end);
 +}
 +

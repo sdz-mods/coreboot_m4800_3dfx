@@ -251,7 +251,8 @@ static void mc_add_dram_resources(struct device *dev, int *resource_cnt)
 	/*
 	 * These are the host memory ranges that should be added:
 	 * - 0 -> 0xa0000:    cacheable
-	 * - 0xc0000 -> TSEG: cacheable
+	 * - 0xc0000 -> 0xe0000: uncacheable legacy option ROM shadow
+	 * - 0xe0000 -> TSEG: cacheable
 	 * - TSEG -> BGSM:    cacheable with standard MTRRs and reserved
 	 * - BGSM -> TOLUD:   not cacheable with standard MTRRs and reserved
 	 * - 4GiB -> TOUUD:   cacheable
@@ -279,12 +280,14 @@ static void mc_add_dram_resources(struct device *dev, int *resource_cnt)
 	/*
 	 * 0 - > 0xa0000: RAM
 	 * 0xa0000 - 0xbffff: Legacy VGA
-	 * 0xc0000 - 0xfffff: RAM
+	 * 0xc0000 - 0xdffff: Legacy option ROM shadow
+	 * 0xe0000 - 0xfffff: RAM
 	 */
 
 	ram_range(dev, index++, 0, 0xa0000);
 	mmio_from_to(dev, index++, 0xa0000, 0xc0000);
-	reserved_ram_from_to(dev, index++, 0xc0000, 1 * MiB);
+	mmio_from_to(dev, index++, 0xc0000, 0xe0000);
+	reserved_ram_from_to(dev, index++, 0xe0000, 1 * MiB);
 
 	/* 1MiB -> TSEG - DPR */
 	ram_from_to(dev, index++, 1 * MiB, mc_values[TSEG_REG] - dpr.size * MiB);
