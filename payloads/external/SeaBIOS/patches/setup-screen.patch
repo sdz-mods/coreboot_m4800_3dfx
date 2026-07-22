@@ -20,14 +20,17 @@ index 1effd802..d48649ab 100644
  #include "util.h" // irqtimer_calc
  #include "tcgbios.h" // tpm_*
 +#include "x86.h" // inb, outb
- 
+
  /****************************************************************
   * Helper search functions
-@@ -456,11 +460,53 @@ static int BootRetryTime;
+@@ -456,11 +460,67 @@ static int BootRetryTime;
  static int CheckFloppySig = 1;
- 
+
  #define DEFAULT_PRIO           9999
 +#define SETUP_CMOS_BOOT_ORDER	52
++#define SETUP_CMOS_USB_FIXED_DISK	53
++#define SETUP_USB_FIXED_AUTO	0
++#define SETUP_USB_FIXED_ALL	1
  
  static int DefaultFloppyPrio = 101;
  static int DefaultCDPrio     = 102;
@@ -75,10 +78,21 @@ index 1effd802..d48649ab 100644
 +        break;
 +    }
 +}
++
++static int
++setup_usb_fixed_disk_mode(void)
++{
++    u8 mode = (setup_cmos_read(SETUP_CMOS_USB_FIXED_DISK) >> 5) & 0x03;
++
++    if (mode > SETUP_USB_FIXED_ALL)
++        mode = SETUP_USB_FIXED_AUTO;
++
++    return mode;
++}
  
  void
  boot_init(void)
-@@ -487,6 +533,8 @@ boot_init(void)
+@@ -487,6 +547,8 @@ boot_init(void)
              case 4: DefaultBEVPrio = i;    break;
              }
          }
@@ -87,22 +101,35 @@ index 1effd802..d48649ab 100644
      }
  
      BootRetryTime = romfile_loadint("etc/boot-fail-wait", 60*1000);
-@@ -593,7 +641,13 @@ boot_add_floppy(struct drive_s *drive, const char *desc, int prio)
+@@ -521,6 +583,13 @@ static struct hlist_head BootList VARVERIFY32INIT;
+ #define IPL_TYPE_BCV         0x81
+ #define IPL_TYPE_HALT        0xf0
+ 
++static int
++drive_is_usb(struct drive_s *drive)
++{
++    return drive->type == DTYPE_USB || drive->type == DTYPE_USB_32
++        || drive->type == DTYPE_UAS || drive->type == DTYPE_UAS_32;
++}
++
+ static void
+ bootentry_add(int type, int prio, u32 data, const char *desc)
+ {
+@@ -593,7 +662,12 @@ boot_add_floppy(struct drive_s *drive, const char *desc, int prio)
  void
  boot_add_hd(struct drive_s *drive, const char *desc, int prio)
  {
 -    bootentry_add(IPL_TYPE_HARDDISK, defPrio(prio, DefaultHDPrio)
 +    int defaultprio = DefaultHDPrio;
 +
-+    if (drive->type == DTYPE_USB || drive->type == DTYPE_USB_32
-+        || drive->type == DTYPE_UAS || drive->type == DTYPE_UAS_32)
++    if (drive_is_usb(drive))
 +        defaultprio = DefaultUSBPrio;
 +
 +    bootentry_add(IPL_TYPE_HARDDISK, defPrio(prio, defaultprio)
                    , (u32)drive, desc);
  }
  
-@@ -618,7 +672,7 @@ boot_add_cd(struct drive_s *drive, const char *desc, int prio)
+@@ -618,7 +692,7 @@ boot_add_cd(struct drive_s *drive, const char *desc, int prio)
  void
  boot_add_cbfs(void *data, const char *desc, int prio)
  {
@@ -111,7 +138,7 @@ index 1effd802..d48649ab 100644
  }
  
  
-@@ -681,6 +735,182 @@ get_keystroke(int msec)
+@@ -681,6 +755,185 @@ get_keystroke(int msec)
   ****************************************************************/
  
  #define DEFAULT_BOOTMENU_WAIT 2500
@@ -150,6 +177,7 @@ index 1effd802..d48649ab 100644
 +#define SETUP_CMOS_VGA_MUX	52
 +#define SETUP_CMOS_SATA2	52
 +#define SETUP_CMOS_BOOT_DELAY	53
++#define SETUP_CMOS_USB_FIXED_DISK	53
 +#define SETUP_CMOS_CSUM_START	51
 +#define SETUP_CMOS_CSUM_END	55
 +#define SETUP_CMOS_CSUM_HIGH	123
@@ -161,6 +189,7 @@ index 1effd802..d48649ab 100644
 +#define SETUP_SATA2_DEFAULT	1
 +#define SETUP_BOOT_ORDER_DEFAULT	0
 +#define SETUP_BOOT_DELAY_DEFAULT	2
++#define SETUP_USB_FIXED_DEFAULT	SETUP_USB_FIXED_AUTO
 +#define SETUP_BIOS_VERSION	"M4800-3DFX-0.3"
 +
 +#define SETUP_ATTR_NORMAL	0x1f
@@ -285,6 +314,7 @@ index 1effd802..d48649ab 100644
 +struct setup_boot_state {
 +    u8 boot_order;
 +    u8 boot_delay;
++    u8 usb_fixed_disk;
 +    int selected;
 +};
 +
@@ -294,7 +324,7 @@ index 1effd802..d48649ab 100644
  
  static const char menuchars[] = {
      '1', '2', '3', '4', '5', '6', '7', '8', '9',
-@@ -690,36 +920,2215 @@ static const char menuchars[] = {
+@@ -690,36 +943,2262 @@ static const char menuchars[] = {
      'u', 'v', 'w', 'x', 'y', 'z'
  };
  
@@ -653,6 +683,17 @@ index 1effd802..d48649ab 100644
 +    return (setup_cmos_read(SETUP_CMOS_BOOT_DELAY) >> 3) & 0x03;
 +}
 +
++static u8
++setup_read_usb_fixed_disk(void)
++{
++    u8 mode = (setup_cmos_read(SETUP_CMOS_USB_FIXED_DISK) >> 5) & 0x03;
++
++    if (mode > SETUP_USB_FIXED_ALL)
++        mode = SETUP_USB_FIXED_DEFAULT;
++
++    return mode;
++}
++
 +static void
 +setup_write_sata_mode(u8 mode)
 +{
@@ -717,6 +758,15 @@ index 1effd802..d48649ab 100644
 +}
 +
 +static void
++setup_write_usb_fixed_disk(u8 mode)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_USB_FIXED_DISK);
++
++    value = (value & ~0x60) | ((mode & 0x03) << 5);
++    setup_cmos_write(SETUP_CMOS_USB_FIXED_DISK, value);
++}
++
++static void
 +setup_write_advanced(const struct setup_advanced_state *adv)
 +{
 +    setup_write_sata_mode(adv->sata_mode);
@@ -732,6 +782,7 @@ index 1effd802..d48649ab 100644
 +{
 +    setup_write_boot_order(boot->boot_order);
 +    setup_write_boot_delay(boot->boot_delay);
++    setup_write_usb_fixed_disk(boot->usb_fixed_disk);
 +    setup_cmos_update_checksum();
 +}
 +
@@ -745,6 +796,7 @@ index 1effd802..d48649ab 100644
 +    adv->sata2 = SETUP_SATA2_DEFAULT;
 +    boot->boot_order = SETUP_BOOT_ORDER_DEFAULT;
 +    boot->boot_delay = SETUP_BOOT_DELAY_DEFAULT;
++    boot->usb_fixed_disk = SETUP_USB_FIXED_DEFAULT;
 +}
 +
 +static void
@@ -821,6 +873,17 @@ index 1effd802..d48649ab 100644
 +        return "10 sec";
 +    default:
 +        return "5 sec";
++    }
++}
++
++static const char *
++setup_usb_fixed_disk_name(u8 mode)
++{
++    switch (mode) {
++    case SETUP_USB_FIXED_ALL:
++        return "All";
++    default:
++        return "Auto";
 +    }
 +}
 +
@@ -1466,12 +1529,16 @@ index 1effd802..d48649ab 100644
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
 +    u8 delay_attr = boot->selected == 1 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    u8 usb_attr = boot->selected == 2 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
 +
 +    setup_clear_page();
 +    setup_draw_value_row(6, "Boot Order", setup_boot_order_name(boot->boot_order),
 +                         SETUP_ATTR_NORMAL, order_attr);
 +    setup_draw_value_row(7, "Boot Prompt Delay", setup_boot_delay_name(boot->boot_delay),
 +                         SETUP_ATTR_NORMAL, delay_attr);
++    setup_draw_value_row(8, "USB Disk Mapping", setup_usb_fixed_disk_name(boot->usb_fixed_disk),
++                         SETUP_ATTR_NORMAL, usb_attr);
 +    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Save  ESC Reboot  Left/Right Change");
 +}
 +
@@ -1899,11 +1966,17 @@ index 1effd802..d48649ab 100644
 +                line2 = "The boot menu can still override this at startup.";
 +                line3 = "";
 +                action = "Press F10 to save.";
-+            } else {
++            } else if (boot->selected == 1) {
 +                title = "Boot Prompt Delay";
 +                line1 = "Controls how long SeaBIOS waits for hotkeys.";
 +                line2 = "";
 +                line3 = "";
++                action = "Press F10 to save.";
++            } else {
++                title = "USB Disk Mapping";
++                line1 = "Auto maps only selected USB boot device as fixed.";
++                line2 = "All maps every USB storage device as fixed.";
++                line3 = "Use Auto to avoid duplicate USB drives in Win98.";
 +                action = "Press F10 to save.";
 +            }
 +        } else if (menu == SETUP_MENU_3DFX) {
@@ -2009,6 +2082,7 @@ index 1effd802..d48649ab 100644
 +    adv.selected = 0;
 +    boot.boot_order = setup_read_boot_order();
 +    boot.boot_delay = setup_read_boot_delay();
++    boot.usb_fixed_disk = setup_read_usb_fixed_disk();
 +    boot.selected = 0;
 +    setup_3dfx_init(&mxm);
 +    setup_3dfx_read_settings(&mxm);
@@ -2187,9 +2261,9 @@ index 1effd802..d48649ab 100644
 +                    continue;
 +                }
 +                if (scan_code == SETUP_KEY_UP)
-+                    boot.selected = boot.selected == 0 ? 1 : boot.selected - 1;
++                    boot.selected = boot.selected == 0 ? 2 : boot.selected - 1;
 +                else
-+                    boot.selected = boot.selected == 1 ? 0 : boot.selected + 1;
++                    boot.selected = boot.selected == 2 ? 0 : boot.selected + 1;
 +                setup_draw_boot_page(&boot, focus);
 +                setup_clear_message();
 +                continue;
@@ -2202,11 +2276,13 @@ index 1effd802..d48649ab 100644
 +                        boot.boot_order = boot.boot_order == 0 ? 3 : boot.boot_order - 1;
 +                    else
 +                        boot.boot_order = boot.boot_order == 3 ? 0 : boot.boot_order + 1;
-+                } else {
++                } else if (boot.selected == 1) {
 +                    if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_MINUS)
 +                        boot.boot_delay = boot.boot_delay == 0 ? 3 : boot.boot_delay - 1;
 +                    else
 +                        boot.boot_delay = boot.boot_delay == 3 ? 0 : boot.boot_delay + 1;
++                } else {
++                    boot.usb_fixed_disk = !boot.usb_fixed_disk;
 +                }
 +                setup_draw_boot_page(&boot, focus);
 +                continue;
@@ -2214,6 +2290,7 @@ index 1effd802..d48649ab 100644
 +            if (scan_code == SETUP_KEY_F9) {
 +                boot.boot_order = SETUP_BOOT_ORDER_DEFAULT;
 +                boot.boot_delay = SETUP_BOOT_DELAY_DEFAULT;
++                boot.usb_fixed_disk = SETUP_USB_FIXED_DEFAULT;
 +                setup_draw_boot_page(&boot, focus);
 +                setup_message("Boot defaults loaded. Press F10 to save changes.");
 +                continue;
@@ -2533,7 +2610,28 @@ index 1effd802..d48649ab 100644
      if (scan_code != menukey)
          return;
  
-@@ -871,7 +3280,9 @@ call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
+@@ -821,6 +3304,8 @@ bcv_prepboot(void)
+         bootentry_add(IPL_TYPE_HALT, haltprio, 0, "HALT");
+ 
+     // Map drives and populate BEV list
++    int usb_fixed_mode = setup_usb_fixed_disk_mode();
++    int hd_seen = 0;
+     struct bootentry_s *pos;
+     hlist_for_each_entry(pos, &BootList, node) {
+         switch (pos->type) {
+@@ -833,6 +3318,11 @@ bcv_prepboot(void)
+             add_bev(IPL_TYPE_FLOPPY, 0);
+             break;
+         case IPL_TYPE_HARDDISK:
++            if (drive_is_usb(pos->drive)) {
++                if (usb_fixed_mode == SETUP_USB_FIXED_AUTO && hd_seen)
++                    break;
++            }
++            hd_seen = 1;
+             map_hd_drive(pos->drive);
+             add_bev(IPL_TYPE_HARDDISK, 0);
+             break;
+@@ -871,7 +3357,9 @@ call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
      // Set the magic number in ax and the boot drive in dl.
      br.dl = bootdrv;
      br.ax = 0xaa55;
@@ -2543,7 +2641,7 @@ index 1effd802..d48649ab 100644
  }
  
  // Boot from a disk (either floppy or harddrive)
-@@ -946,7 +3357,9 @@ boot_cbfs(struct cbfs_file *file)
+@@ -946,7 +3434,9 @@ boot_cbfs(struct cbfs_file *file)
      if (!CONFIG_COREBOOT_FLASH)
          return;
      printf("Booting from CBFS...\n");
