@@ -31,9 +31,9 @@ Name (MCRS, ResourceTemplate ()
 	/* PCI configuration I/O ports */
 	IO (Decode16, 0x0CF8, 0x0CF8, 0x01, 0x08)
 
-	/* Bus 00-FF */
+	/* Bus 00-3E */
 	WordBusNumber (ResourceProducer, MinFixed, MaxFixed, PosDecode,
-			0x0000, 0x0000, 0x00FF, 0x0000, 0x0100)
+			0x0000, 0x0000, 0x003E, 0x0000, 0x003F)
 
 	/* ISA/PCI I/O decode, split to exclude CF8-CFF */
 	WordIO (ResourceProducer, MinFixed, MaxFixed, PosDecode, EntireRange,
