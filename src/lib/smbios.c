@@ -1229,7 +1229,6 @@ static int smbios_walk_device_tree(struct device *tree, int *handle, unsigned lo
 unsigned long smbios_write_tables(unsigned long current)
 {
 	struct smbios_entry *se = NULL;
-	struct smbios_entry30 *se3;
 	unsigned long tables;
 	int len = 0;
 	int max_struct_size = 0;
@@ -1244,10 +1243,6 @@ unsigned long smbios_write_tables(unsigned long current)
 		current += sizeof(*se);
 		current = ALIGN_UP(current, 16);
 	}
-
-	se3 = (struct smbios_entry30 *)current;
-	current += sizeof(*se3);
-	current = ALIGN_UP(current, 16);
 
 	tables = current;
 	update_max(len, max_struct_size, smbios_write_type0(&current, handle++));
@@ -1288,10 +1283,11 @@ unsigned long smbios_write_tables(unsigned long current)
 		memset(se, 0, sizeof(*se));
 		memcpy(se->anchor, "_SM_", 4);
 		se->length = sizeof(*se);
-		se->major_version = 3;
-		se->minor_version = 0;
+		se->major_version = 2;
+		se->minor_version = 4;
 		se->max_struct_size = max_struct_size;
 		se->struct_count = handle;
+		se->smbios_bcd_revision = 0x24;
 		memcpy(se->intermediate_anchor_string, "_DMI_", 5);
 
 		se->struct_table_address = (u32)tables;
@@ -1300,18 +1296,6 @@ unsigned long smbios_write_tables(unsigned long current)
 		se->intermediate_checksum = smbios_checksum((u8 *)se + 0x10, sizeof(*se) - 0x10);
 		se->checksum = smbios_checksum((u8 *)se, sizeof(*se));
 	}
-
-	/* Install SMBIOS 3.0 entry point */
-	memset(se3, 0, sizeof(*se3));
-	memcpy(se3->anchor, "_SM3_", 5);
-	se3->length = sizeof(*se3);
-	se3->major_version = 3;
-	se3->minor_version = 0;
-
-	se3->struct_table_address = (u64)tables;
-	se3->struct_table_length = len;
-
-	se3->checksum = smbios_checksum((u8 *)se3, sizeof(*se3));
 
 	return current;
 }
