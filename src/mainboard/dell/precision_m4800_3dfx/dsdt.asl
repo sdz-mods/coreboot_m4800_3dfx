@@ -18,7 +18,7 @@ DefinitionBlock(
 	#include <southbridge/intel/common/acpi/platform.asl>
 	/* global NVS and variables. */
 	#include <southbridge/intel/lynxpoint/acpi/globalnvs.asl>
-	#include <southbridge/intel/common/acpi/sleepstates.asl>
+	#include "acpi/sleepstates.asl"
 
 	Device (\_SB.PCI0)
 	{
