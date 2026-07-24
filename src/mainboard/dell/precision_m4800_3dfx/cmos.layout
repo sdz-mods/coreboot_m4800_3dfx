@@ -37,6 +37,11 @@ entries
 423	1	e	1	sata2
 427	2	e	18	boot_delay
 
+# coreboot config options: dock Super I/O (LPC47N237)
+429	3	e	19	com_port
+436	2	e	22	lpt_port
+438	2	e	20	lpt_mode
+
 # coreboot config options: ME
 424	1	e	14	me_state
 425	2	h	0	me_state_prev
@@ -90,6 +95,17 @@ enumerations
 18	1	3_sec
 18	2	5_sec
 18	3	10_sec
+19	0	Disable
+19	1	COM1_3F8_IRQ4
+19	2	COM2_2F8_IRQ3
+19	3	COM3_3E8_IRQ4
+19	4	COM4_2E8_IRQ3
+20	0	AT
+20	1	PS2
+20	2	ECP
+22	0	Disable
+22	1	LPT1_378_polled
+22	2	LPT2_278_IRQ5
 
 
 # -----------------------------------------------------------------
