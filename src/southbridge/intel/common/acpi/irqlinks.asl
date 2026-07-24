@@ -15,8 +15,10 @@ Device (LNKA)
 	// Possible Resource Settings for this Link
 	Name (_PRS, ResourceTemplate()
 	{
+		/* IRQ5 removed from the PCI steering pool so Windows reserves it
+		   for the dock parallel port (LPT2 ISA IRQ5); see mec5035 SSDT. */
 		IRQ (Level, ActiveLow, Shared)
-			{ 3, 4, 5, 6, 7, 10, 11, 12, 14, 15 }
+			{ 3, 4, 6, 7, 10, 11, 12, 14, 15 }
 	})
 
 	// Current Resource Settings for this link
@@ -75,8 +77,10 @@ Device (LNKB)
 	// Possible Resource Settings for this Link
 	Name (_PRS, ResourceTemplate()
 	{
+		/* IRQ5 removed from the PCI steering pool so Windows reserves it
+		   for the dock parallel port (LPT2 ISA IRQ5); see mec5035 SSDT. */
 		IRQ (Level, ActiveLow, Shared)
-			{ 3, 4, 5, 6, 7, 10, 11, 12, 14, 15 }
+			{ 3, 4, 6, 7, 10, 11, 12, 14, 15 }
 	})
 
 	// Current Resource Settings for this link
@@ -135,8 +139,10 @@ Device (LNKC)
 	// Possible Resource Settings for this Link
 	Name (_PRS, ResourceTemplate()
 	{
+		/* IRQ5 removed from the PCI steering pool so Windows reserves it
+		   for the dock parallel port (LPT2 ISA IRQ5); see mec5035 SSDT. */
 		IRQ (Level, ActiveLow, Shared)
-			{ 3, 4, 5, 6, 7, 10, 11, 12, 14, 15 }
+			{ 3, 4, 6, 7, 10, 11, 12, 14, 15 }
 	})
 
 	// Current Resource Settings for this link
@@ -195,8 +201,10 @@ Device (LNKD)
 	// Possible Resource Settings for this Link
 	Name (_PRS, ResourceTemplate()
 	{
+		/* IRQ5 removed from the PCI steering pool so Windows reserves it
+		   for the dock parallel port (LPT2 ISA IRQ5); see mec5035 SSDT. */
 		IRQ (Level, ActiveLow, Shared)
-			{ 3, 4, 5, 6, 7, 10, 11, 12, 14, 15 }
+			{ 3, 4, 6, 7, 10, 11, 12, 14, 15 }
 	})
 
 	// Current Resource Settings for this link
@@ -255,8 +263,10 @@ Device (LNKE)
 	// Possible Resource Settings for this Link
 	Name (_PRS, ResourceTemplate()
 	{
+		/* IRQ5 removed from the PCI steering pool so Windows reserves it
+		   for the dock parallel port (LPT2 ISA IRQ5); see mec5035 SSDT. */
 		IRQ (Level, ActiveLow, Shared)
-			{ 3, 4, 5, 6, 7, 10, 11, 12, 14, 15 }
+			{ 3, 4, 6, 7, 10, 11, 12, 14, 15 }
 	})
 
 	// Current Resource Settings for this link
@@ -315,8 +325,10 @@ Device (LNKF)
 	// Possible Resource Settings for this Link
 	Name (_PRS, ResourceTemplate()
 	{
+		/* IRQ5 removed from the PCI steering pool so Windows reserves it
+		   for the dock parallel port (LPT2 ISA IRQ5); see mec5035 SSDT. */
 		IRQ (Level, ActiveLow, Shared)
-			{ 3, 4, 5, 6, 7, 10, 11, 12, 14, 15 }
+			{ 3, 4, 6, 7, 10, 11, 12, 14, 15 }
 	})
 
 	// Current Resource Settings for this link
@@ -375,8 +387,10 @@ Device (LNKG)
 	// Possible Resource Settings for this Link
 	Name (_PRS, ResourceTemplate()
 	{
+		/* IRQ5 removed from the PCI steering pool so Windows reserves it
+		   for the dock parallel port (LPT2 ISA IRQ5); see mec5035 SSDT. */
 		IRQ (Level, ActiveLow, Shared)
-			{ 3, 4, 5, 6, 7, 10, 11, 12, 14, 15 }
+			{ 3, 4, 6, 7, 10, 11, 12, 14, 15 }
 	})
 
 	// Current Resource Settings for this link
@@ -435,8 +449,10 @@ Device (LNKH)
 	// Possible Resource Settings for this Link
 	Name (_PRS, ResourceTemplate()
 	{
+		/* IRQ5 removed from the PCI steering pool so Windows reserves it
+		   for the dock parallel port (LPT2 ISA IRQ5); see mec5035 SSDT. */
 		IRQ (Level, ActiveLow, Shared)
-			{ 3, 4, 5, 6, 7, 10, 11, 12, 14, 15 }
+			{ 3, 4, 6, 7, 10, 11, 12, 14, 15 }
 	})
 
 	// Current Resource Settings for this link
