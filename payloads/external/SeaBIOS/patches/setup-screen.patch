@@ -1,5 +1,5 @@
 diff --git a/src/boot.c b/src/boot.c
-index 1effd802..d48649ab 100644
+index 1effd802..968ce637 100644
 --- a/src/boot.c
 +++ b/src/boot.c
 @@ -8,9 +8,12 @@
@@ -20,15 +20,15 @@ index 1effd802..d48649ab 100644
  #include "util.h" // irqtimer_calc
  #include "tcgbios.h" // tpm_*
 +#include "x86.h" // inb, outb
-
+ 
  /****************************************************************
   * Helper search functions
 @@ -456,11 +460,67 @@ static int BootRetryTime;
  static int CheckFloppySig = 1;
-
+ 
  #define DEFAULT_PRIO           9999
 +#define SETUP_CMOS_BOOT_ORDER	52
-+#define SETUP_CMOS_USB_FIXED_DISK	53
++#define SETUP_CMOS_USB_FIXED_DISK	51
 +#define SETUP_USB_FIXED_AUTO	0
 +#define SETUP_USB_FIXED_ALL	1
  
@@ -82,7 +82,7 @@ index 1effd802..d48649ab 100644
 +static int
 +setup_usb_fixed_disk_mode(void)
 +{
-+    u8 mode = (setup_cmos_read(SETUP_CMOS_USB_FIXED_DISK) >> 5) & 0x03;
++    u8 mode = (setup_cmos_read(SETUP_CMOS_USB_FIXED_DISK) >> 3) & 0x01;
 +
 +    if (mode > SETUP_USB_FIXED_ALL)
 +        mode = SETUP_USB_FIXED_AUTO;
@@ -138,7 +138,7 @@ index 1effd802..d48649ab 100644
  }
  
  
-@@ -681,6 +755,185 @@ get_keystroke(int msec)
+@@ -681,6 +755,196 @@ get_keystroke(int msec)
   ****************************************************************/
  
  #define DEFAULT_BOOTMENU_WAIT 2500
@@ -177,7 +177,7 @@ index 1effd802..d48649ab 100644
 +#define SETUP_CMOS_VGA_MUX	52
 +#define SETUP_CMOS_SATA2	52
 +#define SETUP_CMOS_BOOT_DELAY	53
-+#define SETUP_CMOS_USB_FIXED_DISK	53
++#define SETUP_CMOS_USB_FIXED_DISK	51
 +#define SETUP_CMOS_CSUM_START	51
 +#define SETUP_CMOS_CSUM_END	55
 +#define SETUP_CMOS_CSUM_HIGH	123
@@ -190,7 +190,15 @@ index 1effd802..d48649ab 100644
 +#define SETUP_BOOT_ORDER_DEFAULT	0
 +#define SETUP_BOOT_DELAY_DEFAULT	2
 +#define SETUP_USB_FIXED_DEFAULT	SETUP_USB_FIXED_AUTO
-+#define SETUP_BIOS_VERSION	"M4800-3DFX-0.3"
++/* Dock Super I/O (LPC47N237). com_port: byte 53 bits[7:5]; lpt_port: byte 54
++ * bits[5:4]; lpt_mode: byte 54 bits[7:6]. Applied by coreboot at next boot. */
++#define SETUP_CMOS_COM_PORT	53
++#define SETUP_CMOS_LPT_PORT	54
++#define SETUP_CMOS_LPT_MODE	54
++#define SETUP_COM_PORT_DEFAULT	1	/* COM1 3F8/IRQ4 */
++#define SETUP_LPT_PORT_DEFAULT	1	/* LPT1 0x378 polled */
++#define SETUP_LPT_MODE_DEFAULT	1	/* PS2 (bidirectional) */
++#define SETUP_BIOS_VERSION	"M4800-3DFX-0.4"
 +
 +#define SETUP_ATTR_NORMAL	0x1f
 +#define SETUP_ATTR_SELECT	0x70
@@ -308,6 +316,9 @@ index 1effd802..d48649ab 100644
 +    u8 turbo_disable;
 +    u8 vga_mux;
 +    u8 sata2;
++    u8 com_port;
++    u8 lpt_port;
++    u8 lpt_mode;
 +    int selected;
 +};
 +
@@ -324,7 +335,7 @@ index 1effd802..d48649ab 100644
  
  static const char menuchars[] = {
      '1', '2', '3', '4', '5', '6', '7', '8', '9',
-@@ -690,36 +943,2262 @@ static const char menuchars[] = {
+@@ -690,153 +954,2539 @@ static const char menuchars[] = {
      'u', 'v', 'w', 'x', 'y', 'z'
  };
  
@@ -379,11 +390,16 @@ index 1effd802..d48649ab 100644
 +}
  
 -    while (get_keystroke(0) >= 0)
+-        ;
 +static void
 +setup_puts_attr(u8 row, u8 col, const char *str, u8 attr)
 +{
 +    struct bregs br;
-+
+ 
+-    char *bootmsg = romfile_loadfile("etc/boot-menu-message", NULL);
+-    int menukey = romfile_loadint("etc/boot-menu-key", 1);
+-    printf("%s", bootmsg ?: "\nPress ESC for boot menu.\n\n");
+-    free(bootmsg);
 +    setup_set_cursor(row, col);
 +    while (*str && col < 79) {
 +        memset(&br, 0, sizeof(br));
@@ -398,12 +414,19 @@ index 1effd802..d48649ab 100644
 +        setup_set_cursor(row, col);
 +    }
 +}
-+
+ 
+-    u32 menutime = romfile_loadint("etc/boot-menu-wait", DEFAULT_BOOTMENU_WAIT);
+-    enable_bootsplash();
+-    int scan_code = get_keystroke(menutime);
+-    disable_bootsplash();
+-    if (scan_code != menukey)
+-        return;
 +static void
 +setup_put_char_attr(u8 row, u8 col, u8 ch, u8 attr)
 +{
 +    struct bregs br;
-+
+ 
+-    while (get_keystroke(0) >= 0)
 +    setup_set_cursor(row, col);
 +    memset(&br, 0, sizeof(br));
 +    br.flags = F_IF;
@@ -497,17 +520,26 @@ index 1effd802..d48649ab 100644
          ;
 +}
  
--    char *bootmsg = romfile_loadfile("etc/boot-menu-message", NULL);
--    int menukey = romfile_loadint("etc/boot-menu-key", 1);
--    printf("%s", bootmsg ?: "\nPress ESC for boot menu.\n\n");
--    free(bootmsg);
+-    printf("Select boot device:\n\n");
+-    wait_threads();
 +static void
 +setup_draw_value_row(u8 row, const char *name, const char *value,
 +                     u8 label_attr, u8 value_attr)
 +{
 +    int len;
 +    int i;
-+
+ 
+-    // Show menu items
+-    int maxmenu = 0;
+-    struct bootentry_s *pos, *boot = NULL;
+-    hlist_for_each_entry(pos, &BootList, node) {
+-        char desc[77];
+-        if (maxmenu >= ARRAY_SIZE(menuchars)) {
+-            break;
+-        }
+-        printf("%c. %s\n", menuchars[maxmenu]
+-               , strtcpy(desc, pos->description, ARRAY_SIZE(desc)));
+-        maxmenu++;
 +    for (len = strlen(value); len > 0 && value[len - 1] == ' '; len--)
 +        ;
 +    if (len > 43)
@@ -519,7 +551,9 @@ index 1effd802..d48649ab 100644
 +    for (i = 0; i < len; i++) {
 +        char ch[2] = { value[i], '\0' };
 +        setup_puts_attr(row, SETUP_VALUE_COL + 1 + i, ch, value_attr);
-+    }
+     }
+-    if (tpm_can_show_menu()) {
+-        printf("\nt. TPM Configuration\n");
 +    setup_puts_attr(row, SETUP_VALUE_COL + 1 + len, "]", value_attr);
 +}
 +
@@ -554,8 +588,19 @@ index 1effd802..d48649ab 100644
 +        dt->day = setup_bcd_to_bin(dt->day);
 +        dt->month = setup_bcd_to_bin(dt->month);
 +        year = setup_bcd_to_bin(year);
-+    }
-+
+     }
+ 
+-    // Get key press.  If the menu key is ESC, do not restart boot unless
+-    // 1.5 seconds have passed.  Otherwise users (trained by years of
+-    // repeatedly hitting keys to enter the BIOS) will end up hitting ESC
+-    // multiple times and immediately booting the primary boot device.
+-    int esc_accepted_time = irqtimer_calc(menukey == 1 ? 1500 : 0);
+-    for (;;) {
+-        int keystroke = get_keystroke_full(1000);
+-        if (keystroke == 0x011b && !irqtimer_check(esc_accepted_time))
+-            continue;
+-        if (keystroke < 0) // timeout
+-            continue;
 +    /* The century byte is not maintained (see coreboot); assume 20xx */
 +    dt->year = 2000 + year;
 +
@@ -572,13 +617,36 @@ index 1effd802..d48649ab 100644
 +        setup_write_datetime(dt);
 +    }
 +}
-+
+ 
+-        scan_code = keystroke >> 8;
+-        int key_ascii = keystroke & 0xff;
+-        if (tpm_can_show_menu() && key_ascii == 't') {
+-            printf("\n");
+-            tpm_menu();
+-        }
+-        if (scan_code == 1) {
+-            // ESC
+-            printf("\n");
+-            return;
+-        }
 +static u8
 +setup_bin_to_bcd(u8 val)
 +{
 +    return ((val / 10) << 4) | (val % 10);
 +}
-+
+ 
+-        maxmenu = 0;
+-        hlist_for_each_entry(pos, &BootList, node) {
+-            if (maxmenu >= ARRAY_SIZE(menuchars))
+-                break;
+-            if (key_ascii == menuchars[maxmenu]) {
+-                boot = pos;
+-                break;
+-            }
+-            maxmenu++;
+-        }
+-        if (boot)
+-            break;
 +static void
 +setup_write_datetime(const struct setup_datetime_state *dt)
 +{
@@ -597,8 +665,13 @@ index 1effd802..d48649ab 100644
 +        day = setup_bin_to_bcd(day);
 +        month = setup_bin_to_bcd(month);
 +        year = setup_bin_to_bcd(year);
-+    }
-+
+     }
+-    printf("\n");
+ 
+-    // Find entry and make top priority.
+-    hlist_del(&boot->node);
+-    boot->priority = 0;
+-    hlist_add_head(&boot->node, &BootList);
 +    rtc_mask(CMOS_STATUS_B, 0, RTC_B_SET);
 +    rtc_write(CMOS_RTC_SECONDS, sec);
 +    rtc_write(CMOS_RTC_MINUTES, min);
@@ -607,31 +680,70 @@ index 1effd802..d48649ab 100644
 +    rtc_write(CMOS_RTC_MONTH, month);
 +    rtc_write(CMOS_RTC_YEAR, year);
 +    rtc_mask(CMOS_STATUS_B, RTC_B_SET, 0);
-+}
-+
+ }
+ 
+-// BEV (Boot Execution Vector) list
+-struct bev_s {
+-    int type;
+-    u32 vector;
+-};
+-static struct bev_s BEV[20];
+-static int BEVCount;
+-static int HaveHDBoot, HaveFDBoot;
 +static u8
 +setup_cmos_read(u8 index)
 +{
 +    outb(index | 0x80, 0x70);
 +    return inb(0x71);
 +}
-+
-+static void
+ 
+ static void
+-add_bev(int type, u32 vector)
 +setup_cmos_write(u8 index, u8 value)
-+{
+ {
+-    if (type == IPL_TYPE_HARDDISK && HaveHDBoot++)
+-        return;
+-    if (type == IPL_TYPE_FLOPPY && HaveFDBoot++)
+-        return;
+-    if (BEVCount >= ARRAY_SIZE(BEV))
+-        return;
+-    struct bev_s *bev = &BEV[BEVCount++];
+-    bev->type = type;
+-    bev->vector = vector;
 +    outb(index | 0x80, 0x70);
 +    outb(value, 0x71);
-+}
-+
+ }
+ 
+-// Prepare for boot - show menu and run bcvs.
+-void
+-bcv_prepboot(void)
 +static void
 +setup_cmos_update_checksum(void)
-+{
+ {
+-    if (! CONFIG_BOOT)
+-        return;
 +    u16 sum = 0;
 +    u8 i;
-+
+ 
+-    int haltprio = find_prio("HALT");
+-    if (haltprio >= 0)
+-        bootentry_add(IPL_TYPE_HALT, haltprio, 0, "HALT");
 +    for (i = SETUP_CMOS_CSUM_START; i <= SETUP_CMOS_CSUM_END; i++)
 +        sum += setup_cmos_read(i);
-+
+ 
+-    // Map drives and populate BEV list
+-    struct bootentry_s *pos;
+-    hlist_for_each_entry(pos, &BootList, node) {
+-        switch (pos->type) {
+-        case IPL_TYPE_BCV:
+-            call_bcv(pos->vector.seg, pos->vector.offset);
+-            add_bev(IPL_TYPE_HARDDISK, 0);
+-            break;
+-        case IPL_TYPE_FLOPPY:
+-            map_floppy_drive(pos->drive);
+-            add_bev(IPL_TYPE_FLOPPY, 0);
+-            break;
+-        case IPL_TYPE_HARDDISK:
 +    setup_cmos_write(SETUP_CMOS_CSUM_HIGH, sum >> 8);
 +    setup_cmos_write(SETUP_CMOS_CSUM_LOW, sum & 0xff);
 +}
@@ -686,12 +798,36 @@ index 1effd802..d48649ab 100644
 +static u8
 +setup_read_usb_fixed_disk(void)
 +{
-+    u8 mode = (setup_cmos_read(SETUP_CMOS_USB_FIXED_DISK) >> 5) & 0x03;
++    u8 mode = (setup_cmos_read(SETUP_CMOS_USB_FIXED_DISK) >> 3) & 0x01;
 +
 +    if (mode > SETUP_USB_FIXED_ALL)
 +        mode = SETUP_USB_FIXED_DEFAULT;
 +
 +    return mode;
++}
++
++static u8
++setup_read_com_port(void)
++{
++    u8 v = (setup_cmos_read(SETUP_CMOS_COM_PORT) >> 5) & 0x07;
++
++    return v > 4 ? SETUP_COM_PORT_DEFAULT : v;
++}
++
++static u8
++setup_read_lpt_port(void)
++{
++    u8 v = (setup_cmos_read(SETUP_CMOS_LPT_PORT) >> 4) & 0x03;
++
++    return v > 2 ? SETUP_LPT_PORT_DEFAULT : v;
++}
++
++static u8
++setup_read_lpt_mode(void)
++{
++    u8 v = (setup_cmos_read(SETUP_CMOS_LPT_MODE) >> 6) & 0x03;
++
++    return v > 2 ? SETUP_LPT_MODE_DEFAULT : v;
 +}
 +
 +static void
@@ -762,8 +898,35 @@ index 1effd802..d48649ab 100644
 +{
 +    u8 value = setup_cmos_read(SETUP_CMOS_USB_FIXED_DISK);
 +
-+    value = (value & ~0x60) | ((mode & 0x03) << 5);
++    value = (value & ~0x08) | ((mode & 0x01) << 3);
 +    setup_cmos_write(SETUP_CMOS_USB_FIXED_DISK, value);
++}
++
++static void
++setup_write_com_port(u8 v)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_COM_PORT);
++
++    value = (value & ~0xe0) | ((v & 0x07) << 5);
++    setup_cmos_write(SETUP_CMOS_COM_PORT, value);
++}
++
++static void
++setup_write_lpt_port(u8 v)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_LPT_PORT);
++
++    value = (value & ~0x30) | ((v & 0x03) << 4);
++    setup_cmos_write(SETUP_CMOS_LPT_PORT, value);
++}
++
++static void
++setup_write_lpt_mode(u8 v)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_LPT_MODE);
++
++    value = (value & ~0xc0) | ((v & 0x03) << 6);
++    setup_cmos_write(SETUP_CMOS_LPT_MODE, value);
 +}
 +
 +static void
@@ -774,6 +937,9 @@ index 1effd802..d48649ab 100644
 +    setup_write_turbo_disable(adv->turbo_disable);
 +    setup_write_vga_mux(adv->vga_mux);
 +    setup_write_sata2(adv->sata2);
++    setup_write_com_port(adv->com_port);
++    setup_write_lpt_port(adv->lpt_port);
++    setup_write_lpt_mode(adv->lpt_mode);
 +    setup_cmos_update_checksum();
 +}
 +
@@ -794,6 +960,9 @@ index 1effd802..d48649ab 100644
 +    adv->turbo_disable = SETUP_TURBO_DISABLE_DEFAULT;
 +    adv->vga_mux = SETUP_VGA_MUX_DEFAULT;
 +    adv->sata2 = SETUP_SATA2_DEFAULT;
++    adv->com_port = SETUP_COM_PORT_DEFAULT;
++    adv->lpt_port = SETUP_LPT_PORT_DEFAULT;
++    adv->lpt_mode = SETUP_LPT_MODE_DEFAULT;
 +    boot->boot_order = SETUP_BOOT_ORDER_DEFAULT;
 +    boot->boot_delay = SETUP_BOOT_DELAY_DEFAULT;
 +    boot->usb_fixed_disk = SETUP_USB_FIXED_DEFAULT;
@@ -844,6 +1013,49 @@ index 1effd802..d48649ab 100644
 +setup_sata2_name(u8 enable)
 +{
 +    return enable ? "Enabled" : "Disabled";
++}
++
++static const char *
++setup_com_port_name(u8 v)
++{
++    switch (v) {
++    case 1:
++        return "COM1 3F8h / IRQ4";
++    case 2:
++        return "COM2 2F8h / IRQ3";
++    case 3:
++        return "COM3 3E8h / IRQ4";
++    case 4:
++        return "COM4 2E8h / IRQ3";
++    default:
++        return "Disabled";
++    }
++}
++
++static const char *
++setup_lpt_port_name(u8 v)
++{
++    switch (v) {
++    case 1:
++        return "LPT1 378h (polled)";
++    case 2:
++        return "LPT2 278h / IRQ5";
++    default:
++        return "Disabled";
++    }
++}
++
++static const char *
++setup_lpt_mode_name(u8 v)
++{
++    switch (v) {
++    case 0:
++        return "AT (unidirectional)";
++    case 2:
++        return "ECP";
++    default:
++        return "PS2 (bidirectional)";
++    }
 +}
 +
 +static const char *
@@ -1729,6 +1941,15 @@ index 1effd802..d48649ab 100644
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
 +    u8 vga_attr = adv->selected == 4 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    u8 com_attr = adv->selected == 5 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    u8 lpt_attr = adv->selected == 6 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    /* LPT mode only applies when the parallel port is enabled */
++    int lptmode_valid = adv->lpt_port != 0;
++    u8 lptmode_label_attr = lptmode_valid ? SETUP_ATTR_NORMAL : SETUP_ATTR_DISABLED;
++    u8 lptmode_attr = adv->selected == 7 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : lptmode_label_attr;
 +
 +    setup_clear_page();
 +    setup_draw_value_row(6, "SATA Mode", setup_sata_mode_name(adv->sata_mode),
@@ -1745,6 +1966,12 @@ index 1effd802..d48649ab 100644
 +                         SETUP_ATTR_DISABLED, SETUP_ATTR_DISABLED);
 +    setup_draw_value_row(12, "VGA Mux", setup_vga_mux_name(adv->vga_mux),
 +                         SETUP_ATTR_NORMAL, vga_attr);
++    setup_draw_value_row(13, "Serial Port (COM)", setup_com_port_name(adv->com_port),
++                         SETUP_ATTR_NORMAL, com_attr);
++    setup_draw_value_row(14, "Parallel Port (LPT)", setup_lpt_port_name(adv->lpt_port),
++                         SETUP_ATTR_NORMAL, lpt_attr);
++    setup_draw_value_row(15, "LPT Mode", setup_lpt_mode_name(adv->lpt_mode),
++                         lptmode_label_attr, lptmode_attr);
 +    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Save  ESC Reboot  Left/Right Change");
 +}
 +
@@ -1952,11 +2179,29 @@ index 1effd802..d48649ab 100644
 +                line2 = "";
 +                line3 = "";
 +                action = "Press F10 to save, then reboot.";
-+            } else {
++            } else if (adv->selected == 4) {
 +                title = "VGA Mux";
 +                line1 = "Routes the external VGA output.";
 +                line2 = "Connector selects laptop VGA; Dock selects dock VGA.";
 +                line3 = "";
++                action = "Press F10 to save, then reboot.";
++            } else if (adv->selected == 5) {
++                title = "Serial Port (COM)";
++                line1 = "Docking-station serial port address and IRQ.";
++                line2 = "COM1/COM3 use IRQ4; COM2/COM4 use IRQ3.";
++                line3 = "Requires the docking station.";
++                action = "Press F10 to save, then reboot.";
++            } else if (adv->selected == 6) {
++                title = "Parallel Port (LPT)";
++                line1 = "Docking-station parallel port address and IRQ.";
++                line2 = "LPT1 378h is polled; LPT2 278h uses IRQ5.";
++                line3 = "Requires the docking station.";
++                action = "Press F10 to save, then reboot.";
++            } else {
++                title = "LPT Mode";
++                line1 = "AT: standard printer, output only.";
++                line2 = "PS2: bidirectional. ECP: adds 778h + high speed.";
++                line3 = "Only applies when the parallel port is enabled.";
 +                action = "Press F10 to save, then reboot.";
 +            }
 +        } else if (menu == SETUP_MENU_BOOT) {
@@ -2079,6 +2324,9 @@ index 1effd802..d48649ab 100644
 +    adv.turbo_disable = setup_read_turbo_disable();
 +    adv.vga_mux = setup_read_vga_mux();
 +    adv.sata2 = setup_read_sata2();
++    adv.com_port = setup_read_com_port();
++    adv.lpt_port = setup_read_lpt_port();
++    adv.lpt_mode = setup_read_lpt_mode();
 +    adv.selected = 0;
 +    boot.boot_order = setup_read_boot_order();
 +    boot.boot_delay = setup_read_boot_delay();
@@ -2211,9 +2459,9 @@ index 1effd802..d48649ab 100644
 +                    continue;
 +                }
 +                if (scan_code == SETUP_KEY_UP)
-+                    adv.selected = adv.selected == 0 ? 4 : adv.selected - 1;
++                    adv.selected = adv.selected == 0 ? 7 : adv.selected - 1;
 +                else
-+                    adv.selected = adv.selected == 4 ? 0 : adv.selected + 1;
++                    adv.selected = adv.selected == 7 ? 0 : adv.selected + 1;
 +                setup_draw_advanced_page(&adv, focus);
 +                setup_clear_message();
 +                continue;
@@ -2233,8 +2481,25 @@ index 1effd802..d48649ab 100644
 +                    adv.hda_disable = !adv.hda_disable;
 +                } else if (adv.selected == 3) {
 +                    adv.turbo_disable = !adv.turbo_disable;
-+                } else {
++                } else if (adv.selected == 4) {
 +                    adv.vga_mux = !adv.vga_mux;
++                } else if (adv.selected == 5) {
++                    if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_MINUS)
++                        adv.com_port = adv.com_port == 0 ? 4 : adv.com_port - 1;
++                    else
++                        adv.com_port = adv.com_port == 4 ? 0 : adv.com_port + 1;
++                } else if (adv.selected == 6) {
++                    if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_MINUS)
++                        adv.lpt_port = adv.lpt_port == 0 ? 2 : adv.lpt_port - 1;
++                    else
++                        adv.lpt_port = adv.lpt_port == 2 ? 0 : adv.lpt_port + 1;
++                } else {
++                    if (adv.lpt_port != 0) {
++                        if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_MINUS)
++                            adv.lpt_mode = adv.lpt_mode == 0 ? 2 : adv.lpt_mode - 1;
++                        else
++                            adv.lpt_mode = adv.lpt_mode == 2 ? 0 : adv.lpt_mode + 1;
++                    }
 +                }
 +                setup_draw_advanced_page(&adv, focus);
 +                if (adv.selected == 1 && adv.sata_mode != 1)
@@ -2602,27 +2867,126 @@ index 1effd802..d48649ab 100644
 +        show_setup_screen();
 +        return;
 +    }
- 
--    u32 menutime = romfile_loadint("etc/boot-menu-wait", DEFAULT_BOOTMENU_WAIT);
--    enable_bootsplash();
--    int scan_code = get_keystroke(menutime);
--    disable_bootsplash();
-     if (scan_code != menukey)
-         return;
- 
-@@ -821,6 +3304,8 @@ bcv_prepboot(void)
-         bootentry_add(IPL_TYPE_HALT, haltprio, 0, "HALT");
- 
-     // Map drives and populate BEV list
++
++    if (scan_code != menukey)
++        return;
++
++    while (get_keystroke(0) >= 0)
++        ;
++
++    printf("Select boot device:\n\n");
++    wait_threads();
++
++    // Show menu items
++    int maxmenu = 0;
++    struct bootentry_s *pos, *boot = NULL;
++    hlist_for_each_entry(pos, &BootList, node) {
++        char desc[77];
++        if (maxmenu >= ARRAY_SIZE(menuchars)) {
++            break;
++        }
++        printf("%c. %s\n", menuchars[maxmenu]
++               , strtcpy(desc, pos->description, ARRAY_SIZE(desc)));
++        maxmenu++;
++    }
++    if (tpm_can_show_menu()) {
++        printf("\nt. TPM Configuration\n");
++    }
++
++    // Get key press.  If the menu key is ESC, do not restart boot unless
++    // 1.5 seconds have passed.  Otherwise users (trained by years of
++    // repeatedly hitting keys to enter the BIOS) will end up hitting ESC
++    // multiple times and immediately booting the primary boot device.
++    int esc_accepted_time = irqtimer_calc(menukey == 1 ? 1500 : 0);
++    for (;;) {
++        int keystroke = get_keystroke_full(1000);
++        if (keystroke == 0x011b && !irqtimer_check(esc_accepted_time))
++            continue;
++        if (keystroke < 0) // timeout
++            continue;
++
++        scan_code = keystroke >> 8;
++        int key_ascii = keystroke & 0xff;
++        if (tpm_can_show_menu() && key_ascii == 't') {
++            printf("\n");
++            tpm_menu();
++        }
++        if (scan_code == 1) {
++            // ESC
++            printf("\n");
++            return;
++        }
++
++        maxmenu = 0;
++        hlist_for_each_entry(pos, &BootList, node) {
++            if (maxmenu >= ARRAY_SIZE(menuchars))
++                break;
++            if (key_ascii == menuchars[maxmenu]) {
++                boot = pos;
++                break;
++            }
++            maxmenu++;
++        }
++        if (boot)
++            break;
++    }
++    printf("\n");
++
++    // Find entry and make top priority.
++    hlist_del(&boot->node);
++    boot->priority = 0;
++    hlist_add_head(&boot->node, &BootList);
++}
++
++// BEV (Boot Execution Vector) list
++struct bev_s {
++    int type;
++    u32 vector;
++};
++static struct bev_s BEV[20];
++static int BEVCount;
++static int HaveHDBoot, HaveFDBoot;
++
++static void
++add_bev(int type, u32 vector)
++{
++    if (type == IPL_TYPE_HARDDISK && HaveHDBoot++)
++        return;
++    if (type == IPL_TYPE_FLOPPY && HaveFDBoot++)
++        return;
++    if (BEVCount >= ARRAY_SIZE(BEV))
++        return;
++    struct bev_s *bev = &BEV[BEVCount++];
++    bev->type = type;
++    bev->vector = vector;
++}
++
++// Prepare for boot - show menu and run bcvs.
++void
++bcv_prepboot(void)
++{
++    if (! CONFIG_BOOT)
++        return;
++
++    int haltprio = find_prio("HALT");
++    if (haltprio >= 0)
++        bootentry_add(IPL_TYPE_HALT, haltprio, 0, "HALT");
++
++    // Map drives and populate BEV list
 +    int usb_fixed_mode = setup_usb_fixed_disk_mode();
 +    int hd_seen = 0;
-     struct bootentry_s *pos;
-     hlist_for_each_entry(pos, &BootList, node) {
-         switch (pos->type) {
-@@ -833,6 +3318,11 @@ bcv_prepboot(void)
-             add_bev(IPL_TYPE_FLOPPY, 0);
-             break;
-         case IPL_TYPE_HARDDISK:
++    struct bootentry_s *pos;
++    hlist_for_each_entry(pos, &BootList, node) {
++        switch (pos->type) {
++        case IPL_TYPE_BCV:
++            call_bcv(pos->vector.seg, pos->vector.offset);
++            add_bev(IPL_TYPE_HARDDISK, 0);
++            break;
++        case IPL_TYPE_FLOPPY:
++            map_floppy_drive(pos->drive);
++            add_bev(IPL_TYPE_FLOPPY, 0);
++            break;
++        case IPL_TYPE_HARDDISK:
 +            if (drive_is_usb(pos->drive)) {
 +                if (usb_fixed_mode == SETUP_USB_FIXED_AUTO && hd_seen)
 +                    break;
@@ -2631,7 +2995,7 @@ index 1effd802..d48649ab 100644
              map_hd_drive(pos->drive);
              add_bev(IPL_TYPE_HARDDISK, 0);
              break;
-@@ -871,7 +3357,9 @@ call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
+@@ -871,7 +3521,9 @@ call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
      // Set the magic number in ax and the boot drive in dl.
      br.dl = bootdrv;
      br.ax = 0xaa55;
@@ -2641,7 +3005,7 @@ index 1effd802..d48649ab 100644
  }
  
  // Boot from a disk (either floppy or harddrive)
-@@ -946,7 +3434,9 @@ boot_cbfs(struct cbfs_file *file)
+@@ -946,7 +3598,9 @@ boot_cbfs(struct cbfs_file *file)
      if (!CONFIG_COREBOOT_FLASH)
          return;
      printf("Booting from CBFS...\n");
