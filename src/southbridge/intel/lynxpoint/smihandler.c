@@ -303,6 +303,11 @@ static void southbridge_smi_gpe0(void)
 	clear_gpe_status();
 }
 
+static void southbridge_smi_swsmi_tmr(void)
+{
+	mainboard_smi_swsmi_tmr();
+}
+
 static void southbridge_smi_gpi(void)
 {
 	mainboard_smi_gpi(clear_alt_smi_status());
@@ -432,7 +437,7 @@ static smi_handler_t southbridge_smi[32] = {
 	NULL,			  //  [3] LEGACY_USB_STS
 	southbridge_smi_sleep,	  //  [4] SLP_SMI_STS
 	southbridge_smi_apmc,	  //  [5] APM_STS
-	NULL,			  //  [6] SWSMI_TMR_STS
+	southbridge_smi_swsmi_tmr, //  [6] SWSMI_TMR_STS
 	NULL,			  //  [7] reserved
 	southbridge_smi_pm1,	  //  [8] PM1_STS
 	southbridge_smi_gpe0,	  //  [9] GPE0_STS
