@@ -63,6 +63,8 @@ display adapter.
 - Configurable CPU Turbo state.
 - Configurable SATA mode and external VGA destination.
 - Configurable mSATA controller (IDE native mode).
+- Configurable docking-station serial (COM1-4) and parallel
+  (LPT1/LPT2, AT/PS2/ECP) ports.
 - Configurable boot order and boot-prompt delay.
 - Editable RTC date and time.
 
@@ -96,6 +98,7 @@ reimplementing the project.
 | FPU error reporting | Enables FERR#/IRQ 13 coprocessor error routing (OIC/GCS) like the OEM firmware, for DOS and Win9x-era software. |
 | Audio | Supplies Realtek ALC292 verbs, adds early HDA disable support, and sends the Dell EC speaker-unmute command required for working audio. |
 | Dell EC | Routes power-button events to the host OS and controls the dGPU VGA mux for either the laptop or docking-station connector. |
+| Docking Super I/O | Brings up the docking station's SMSC LPC47N237 serial and parallel ports. The LPC47N237 lives in the dock and is reached over a secondary LPC bus driven by the laptop's ENE ECE5048 controller. The firmware brings this path up by configuring the ECE5048 and issuing a dock-enable command to the MEC5075, then programs the ports from CMOS setup options (COM1-4, LPT1/LPT2, and AT/PS2/ECP parallel mode), gates them on dock presence via the Super I/O chip ID, and enumerates them to the operating system through a generated SSDT. |
 | SeaBIOS keyboard | Updates Caps Lock, Num Lock, and Scroll Lock LEDs directly so they work under DOS, Windows 98, and Windows XP. |
 | SeaBIOS integration | Applies the project SeaBIOS patches automatically during the coreboot build and embeds the configurable boot-menu wait value. |
 | Setup utility | Adds persistent CMOS controls, RTC editing, boot selection, system information, contextual help, and direct M3800/M4800 information, telemetry, and card settings. |
@@ -140,8 +143,8 @@ The following table records configurations tested with this firmware.
 | Docking-station Ethernet | Confirmed[^6] | Confirmed | Confirmed |
 | Docking-station power button | Confirmed | Confirmed | Confirmed |
 | Docking-station DVI/DP | X | X | X |
-| Docking-station COM port | X | X | X |
-| Docking-station parallel port | X | X | X |
+| Docking-station COM port | Confirmed | Confirmed | Confirmed |
+| Docking-station parallel port | Confirmed | Confirmed | Confirmed |
 | Docking-station headphone jack | Confirmed[^5] | Confirmed | Confirmed |
 | Docking-station eSATA | -[^4] | -[^4] | -[^4] |
 | DisplayPort and HDMI output | X | X | X |
@@ -156,9 +159,15 @@ supported by that operating system.
 [^1]: mSATA works in AHCI mode and, through the second SATA controller, in
       IDE native mode. In IDE native mode it can be hidden with the mSATA
       Controller setup option.
-[^2]: On Voodoo4 M4800 cards, the 1920x1080 internal panel requires a registry
-      patch under Windows 98 and Windows XP due to a VSA-100 limitation. The
-      patch is not required for Voodoo3 M3800 cards.
+[^2]: VSA-100 drivers halve the horizontal resolution on the digital video
+      interface whenever Htotal (Hactive plus the sync pulse and the front and
+      back porches) exceeds 2088. Work around it with either a registry patch
+      that tweaks the timings (which can break VGA output at some resolutions)
+      or, preferably, the
+      [sdz-mods/VSA100-modefix](https://github.com/sdz-mods/VSA100-modefix)
+      driver patch, which allows 1920x1080 on both the internal panel and the
+      VGA output at the same time. This affects only VSA-100 (Voodoo4 M4800) cards;
+      Voodoo3 M3800 cards are unaffected.
 [^3]: The stock `xserver-xorg-video-tdfx` X11 driver programs the VSA PLLs
       incorrectly and can drive the VCO outside its valid range at any
       resolution. Linux testing uses a patched driver that corrects the PLL
@@ -184,7 +193,7 @@ The setup utility contains:
 | --- | --- |
 | Info | System, CPU, memory, 3dfx card, VBIOS, coreboot, and SeaBIOS information |
 | Main | RTC date and time |
-| Advanced | SATA mode, mSATA controller, HDA, CPU Turbo, and VGA mux routing |
+| Advanced | SATA mode, mSATA controller, HDA, CPU Turbo, VGA mux routing, and docking-station serial/parallel ports |
 | Boot | Boot order and boot-prompt delay |
 | 3dfx | MXM card information, telemetry, and persistent card settings |
 | Save & Exit | Save, discard, restore defaults, or reset the MXM card settings |
