@@ -8,6 +8,8 @@
 #define NUM_REGISTERS	32
 
 enum mec5035_cmd {
+	CMD_DOCK_QUERY = 0x04,
+	CMD_DOCK_ENABLE = 0x15,
 	CMD_MOUSE_TP = 0x1a,
 	CMD_RADIO_CTRL = 0x2b,
 	CMD_POWER_BUTTON_TO_HOST = 0x3e,
@@ -15,6 +17,8 @@ enum mec5035_cmd {
 	CMD_GPIO_CTRL = 0xb3,
 	CMD_CPU_OK = 0xc2,
 };
+
+void mec5035_dock_enable(void);
 
 /* Touchpad (TP) and mouse related. The EC seems to
    default to 0 which results in the TP not working. */
