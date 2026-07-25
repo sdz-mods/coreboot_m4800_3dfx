@@ -5,6 +5,7 @@
 #include <bootstate.h>
 #include <device/device.h>
 #include <device/pci_ops.h>
+#include <option.h>
 #include <pc80/keyboard.h>
 #include <southbridge/intel/lynxpoint/pch.h>
 #include <ec/dell/mec5035/mec5035.h>
@@ -23,6 +24,11 @@ static void dock_arm_undock_smi(void *unused)
 {
 	u16 pmbase;
 	u8 pmcon3;
+
+	/* Arm only when the dock Super I/O and its SMM undock guard are both
+	   enabled in setup. */
+	if (!get_uint_option("dock_superio", 0) || !get_uint_option("dock_smm", 1))
+		return;
 
 	/* Software-SMI timer rate = 16 ms (GEN_PMCON_3[7:6] = 01b). */
 	pmcon3 = pci_s_read_config8(PCH_LPC_DEV, GEN_PMCON_3);

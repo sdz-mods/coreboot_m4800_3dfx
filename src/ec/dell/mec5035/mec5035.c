@@ -249,6 +249,12 @@ static void dock_sio_program(void)
 
 void mec5035_dock_enable(void)
 {
+	/* Skip all dock Super I/O bringup when disabled in setup: no ECE5048
+	   config, no dock ports, and dock_sio_present stays false so the ACPI
+	   nodes and the SMM undock guard are never advertised or armed. */
+	if (!get_uint_option("dock_superio", 0))
+		return;
+
 	/* Stage 1: ECE5048 bridge config (0x55 = enter, 0xaa = exit). */
 	outb(0x55, 0x94e);
 	ece5048_write(0x22, 0x10);
