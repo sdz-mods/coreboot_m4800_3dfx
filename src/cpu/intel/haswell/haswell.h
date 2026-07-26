@@ -3,7 +3,9 @@
 #ifndef _CPU_INTEL_HASWELL_H
 #define _CPU_INTEL_HASWELL_H
 
+#include <commonlib/helpers.h>
 #include <cpu/cpu.h>
+#include <option.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -168,6 +170,18 @@ void intel_cpu_haswell_finalize_smm(void);
 /* Configure power limits for turbo mode */
 void set_power_limits(u8 power_limit_1_time);
 int cpu_config_tdp_levels(void);
+
+/* Bus ratio for the "cpu_clock_cap" setup option; 0 = no cap. Must match
+   the cpu_clock_cap enumeration in cmos.layout. Usable from any stage. */
+static inline unsigned int haswell_get_clock_cap_ratio(void)
+{
+	static const u8 cap_ratio[] = {0, 8, 12, 16, 20, 24};
+	unsigned int cap = get_uint_option("cpu_clock_cap", 0);
+
+	if (cap >= ARRAY_SIZE(cap_ratio))
+		cap = 0;
+	return cap_ratio[cap];
+}
 
 void set_max_freq(void);
 

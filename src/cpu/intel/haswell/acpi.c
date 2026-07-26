@@ -15,101 +15,52 @@
 
 #include <southbridge/intel/lynxpoint/pch.h>
 
-#define MWAIT_RES(state, sub_state)                         \
-	{                                                   \
-		.addrl = (((state) << 4) | (sub_state)),    \
-		.space_id = ACPI_ADDRESS_SPACE_FIXED,       \
-		.bit_width = ACPI_FFIXEDHW_VENDOR_INTEL,    \
-		.bit_offset = ACPI_FFIXEDHW_CLASS_MWAIT,    \
-		.access_size = ACPI_FFIXEDHW_FLAG_HW_COORD, \
-	}
-
-static acpi_cstate_t cstate_map[NUM_C_STATES] = {
-	[C_STATE_C0] = { },
-	[C_STATE_C1] = {
-		.latency = 0,
-		.power = 1000,
-		.resource = MWAIT_RES(0, 0),
-	},
-	[C_STATE_C1E] = {
-		.latency = 0,
-		.power = 1000,
-		.resource = MWAIT_RES(0, 1),
-	},
-	[C_STATE_C3] = {
-		.latency = C_STATE_LATENCY_FROM_LAT_REG(0),
-		.power = 900,
-		.resource = MWAIT_RES(1, 0),
-	},
-	[C_STATE_C6_SHORT_LAT] = {
-		.latency = C_STATE_LATENCY_FROM_LAT_REG(1),
-		.power = 800,
-		.resource = MWAIT_RES(2, 0),
-	},
-	[C_STATE_C6_LONG_LAT] = {
-		.latency = C_STATE_LATENCY_FROM_LAT_REG(2),
-		.power = 800,
-		.resource = MWAIT_RES(2, 1),
-	},
-	[C_STATE_C7_SHORT_LAT] = {
-		.latency = C_STATE_LATENCY_FROM_LAT_REG(1),
-		.power = 700,
-		.resource = MWAIT_RES(3, 0),
-	},
-	[C_STATE_C7_LONG_LAT] = {
-		.latency = C_STATE_LATENCY_FROM_LAT_REG(2),
-		.power = 700,
-		.resource = MWAIT_RES(3, 1),
-	},
-	[C_STATE_C7S_SHORT_LAT] = {
-		.latency = C_STATE_LATENCY_FROM_LAT_REG(1),
-		.power = 700,
-		.resource = MWAIT_RES(3, 2),
-	},
-	[C_STATE_C7S_LONG_LAT] = {
-		.latency = C_STATE_LATENCY_FROM_LAT_REG(2),
-		.power = 700,
-		.resource = MWAIT_RES(3, 3),
-	},
-	[C_STATE_C8] = {
-		.latency = C_STATE_LATENCY_FROM_LAT_REG(3),
-		.power = 600,
-		.resource = MWAIT_RES(4, 0),
-	},
-	[C_STATE_C9] = {
-		.latency = C_STATE_LATENCY_FROM_LAT_REG(4),
-		.power = 500,
-		.resource = MWAIT_RES(5, 0),
-	},
-	[C_STATE_C10] = {
-		.latency = C_STATE_LATENCY_FROM_LAT_REG(5),
-		.power = 400,
-		.resource = MWAIT_RES(6, 0),
-	},
-};
-
-static const int cstate_set_s0ix[3] = {
-	C_STATE_C1E,
-	C_STATE_C7S_LONG_LAT,
-	C_STATE_C10,
-};
-
-static const int cstate_set_lp[3] = {
-	C_STATE_C1E,
-	C_STATE_C3,
-	C_STATE_C7S_LONG_LAT,
-};
-
-static const int cstate_set_trad[3] = {
-	C_STATE_C1,
-	C_STATE_C3,
-	C_STATE_C6_LONG_LAT,
-};
-
-static int get_logical_cores_per_package(void)
+/*
+ * Windows XP can only use C-states whose _CST control registers are in I/O
+ * space: its multiprocessor kernel never uses the ACPI 1.0 P_BLK/FADT path
+ * ("the system must be a uniprocessor system", and the P_LVL2_UP FADT flag
+ * is ignored by every Windows version), and its processor driver cannot
+ * parse FFixedHW/MWAIT entries - a MWAIT-based _CST leaves XP idling in
+ * C1/HLT, which keeps every core "active" and locks the package to the
+ * all-cores turbo bin. So emit an I/O-based _CST: the P_LVLx reads are
+ * redirected to MWAIT by the CPU (see configure_c_states). Like the OEM
+ * firmware's XP-visible _CST, "C2" maps to LVL_4 = a real C7: the top
+ * single-core turbo bin only engages with the sibling cores in C6/C7
+ * (parking them merely in C3 was measured one bin short). A _CSD
+ * reporting HW_ALL coordination is emitted for the Vista+-era validators.
+ *
+ * Linux is unaffected: intel_idle drives C-states from built-in tables and
+ * ignores _CST on this CPU. Windows 98 (uniprocessor) may also use the
+ * legacy P_BLK/FADT path (see generate_cpu_entry and the mainboard FADT).
+ */
+static void generate_C_state_entries(const struct device *dev)
 {
-	msr_t msr = rdmsr(MSR_CORE_THREAD_COUNT);
-	return msr.lo & 0xffff;
+	const u16 pmbase = get_pmbase();
+	const acpi_cstate_t cstates[] = {
+		{
+			/* C1: native halt */
+			.ctype = 1,
+			.latency = 1,
+			.power = 1000,
+			.resource = {ACPI_ADDRESS_SPACE_FIXED, 1, 2, 1, 0, 0},
+		},
+		{
+			/* C2: P_LVL4 read, redirected to MWAIT C7. Latency
+			   mirrors the C6/C7 IRTL programmed in the CPU (see
+			   configure_c_states) so the value we advertise to the
+			   OS matches the hardware's interrupt-response limit. */
+			.ctype = 2,
+			.latency = C_STATE_LATENCY_FROM_LAT_REG(2),
+			.power = 200,
+			.resource = {ACPI_ADDRESS_SPACE_IO, 8, 0, 1,
+				     (u32)(pmbase + 0x16), 0},
+		},
+	};
+
+	acpigen_write_CST_package(cstates, ARRAY_SIZE(cstates));
+
+	/* HW_ALL coordination: required for XP to keep C2+ on multiprocessor */
+	acpigen_write_CSD_package(0, dev_count_cpu(), CSD_HW_ALL, 0);
 }
 
 static acpi_tstate_t tss_table_fine[] = {
@@ -164,41 +115,6 @@ static void generate_T_state_entries(int core, int cores_per_package)
 			ARRAY_SIZE(tss_table_coarse), tss_table_coarse);
 }
 
-static bool is_s0ix_enabled(const struct device *dev)
-{
-	if (!haswell_is_ult())
-		return false;
-
-	const struct cpu_intel_haswell_config *conf = dev->chip_info;
-	return conf->s0ix_enable;
-}
-
-static void generate_C_state_entries(const struct device *dev)
-{
-	acpi_cstate_t acpi_cstate_map[3] = {0};
-
-	const int *acpi_cstates;
-
-	if (is_s0ix_enabled(dev))
-		acpi_cstates = cstate_set_s0ix;
-	else if (haswell_is_ult())
-		acpi_cstates = cstate_set_lp;
-	else
-		acpi_cstates = cstate_set_trad;
-
-	/* Count number of active C-states */
-	int count = 0;
-
-	for (int i = 0; i < ARRAY_SIZE(acpi_cstate_map); i++) {
-		if (acpi_cstates[i] > 0 && acpi_cstates[i] < ARRAY_SIZE(cstate_map)) {
-			acpi_cstate_map[count] = cstate_map[acpi_cstates[i]];
-			acpi_cstate_map[count].ctype = i + 1;
-			count++;
-		}
-	}
-	acpigen_write_CST_package(acpi_cstate_map, count);
-}
-
 static int calculate_power(int tdp, int p1_ratio, int ratio)
 {
 	u32 m;
@@ -247,6 +163,16 @@ static void generate_P_state_entries(int core, int cores_per_package)
 		/* Max Non-Turbo Ratio */
 		ratio_max = (msr.lo >> 8) & 0xff;
 	}
+
+	/* The setup-selected frequency cap bounds the whole table so OS
+	   governors cannot exceed it (turbo is already disabled when a cap
+	   is active, so no turbo entry gets emitted either). */
+	ratio = haswell_get_clock_cap_ratio();
+	if (ratio && ratio_max > ratio)
+		ratio_max = ratio;
+	if (ratio_max < ratio_min)
+		ratio_min = ratio_max;
+
 	clock_max = ratio_max * CPU_BCLK;
 
 	/* Calculate CPU TDP in mW */
@@ -332,10 +258,17 @@ static void generate_cpu_entry(const struct device *device, int cpu, int core, i
 	 * Windows XP's processor driver (processr.sys/intelppm.sys) only binds
 	 * to Processor() objects; it ignores ACPI0007 devices, so with the
 	 * modern declaration XP never reads _PSS and SpeedStep does not work.
-	 * The PBLK is left at 0 - C-states are described via _CST, not P_BLK.
-	 * Processor() is deprecated as of ACPI 6.0.
+	 *
+	 * Advertise a P_BLK (PMBASE+0x10, 6 bytes: P_CNT, P_LVL2, P_LVL3) for
+	 * uniprocessor pre-Vista OSes (Windows 98, DOS) that use the legacy
+	 * ACPI 1.0 C-state scheme rather than _CST; their P_LVL2/P_LVL3 reads
+	 * are redirected to MWAIT C3/C6 by the CPU (see configure_c_states).
+	 * Windows XP does not use this path - it consumes the I/O-based _CST
+	 * instead (see generate_C_state_entries) - and modern OSes ignore the
+	 * P_BLK. Processor() is deprecated as of ACPI 6.0.
 	 */
-	acpigen_write_processor(cpu * cores_per_package + core, 0, 0);
+	acpigen_write_processor(cpu * cores_per_package + core,
+				get_pmbase() + 0x10, 6);
 
 	/* Generate P-state tables */
 	generate_P_state_entries(core, cores_per_package);
@@ -351,23 +284,23 @@ static void generate_cpu_entry(const struct device *device, int cpu, int core, i
 
 void generate_cpu_entries(const struct device *device)
 {
+	/* Emit one processor object per ENABLED cpu device, so threads parked
+	   by the hyperthreading/cpu_cores setup options (dev->enabled = 0)
+	   are absent here just like in the MADT. The ACPI processor IDs must
+	   match the MADT lapic indices, which enumerate enabled CPUs 0..n. */
 	int totalcores = dev_count_cpu();
-	int cores_per_package = get_logical_cores_per_package();
-	int numcpus = totalcores / cores_per_package;
 
-	printk(BIOS_DEBUG, "Found %d CPU(s) with %d core(s) each.\n",
-	       numcpus, cores_per_package);
+	printk(BIOS_DEBUG, "Found %d enabled CPU thread(s).\n", totalcores);
 
-	for (int cpu_id = 0; cpu_id < numcpus; cpu_id++)
-		for (int core_id = 0; core_id < cores_per_package; core_id++)
-			generate_cpu_entry(device, cpu_id, core_id, cores_per_package);
+	for (int core_id = 0; core_id < totalcores; core_id++)
+		generate_cpu_entry(device, 0, core_id, totalcores);
 
 	/* PPKG is usually used for thermal management
 	   of the first and only package. */
-	acpigen_write_processor_package("PPKG", 0, cores_per_package);
+	acpigen_write_processor_package("PPKG", 0, totalcores);
 
 	/* Add a method to notify processor nodes */
-	acpigen_write_processor_cnot(cores_per_package);
+	acpigen_write_processor_cnot(totalcores);
 }
 
 struct chip_operations cpu_intel_haswell_ops = {

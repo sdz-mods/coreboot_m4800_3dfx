@@ -386,6 +386,21 @@ static void configure_c_states(void)
 
 	const bool timed_mwait_capable = !!(msr.hi & TIMED_MWAIT_SUPPORTED);
 
+	/*
+	 * Redirect the P_LVLx I/O reads to MWAIT so the C-states we advertise
+	 * become real hardware C-states. Two independent consumers rely on this:
+	 *   - Windows XP uses the I/O-based _CST (see acpi.c); its "C2" entry is
+	 *     a read of P_LVL4, which this turns into a real C7.
+	 *   - uniprocessor pre-Vista OSes (Windows 98) that use the legacy FADT
+	 *     P_BLK scheme read P_LVL2/P_LVL3, which become C3/C6.
+	 * Deep sibling C-states (C6/C7) are what let the top single-core turbo
+	 * bins engage. The capture range below spans P_LVL2..P_LVL4 (-> C3/C6/C7).
+	 */
+	msr.lo = (get_pmbase() + 0x14) & 0xffff;	/* LVL_2 base */
+	msr.lo |= (2 << 16);	/* range: up to C7 (LVL_2/3/4 -> C3/C6/C7) */
+	msr.hi = 0;
+	wrmsr(MSR_PMG_IO_CAPTURE_BASE, msr);
+
 	msr = rdmsr(MSR_PKG_CST_CONFIG_CONTROL);
 	msr.lo |= (1 << 30);	// Package c-state Undemotion Enable
 	msr.lo |= (1 << 29);	// Package c-state Demotion Enable
@@ -394,7 +409,7 @@ static void configure_c_states(void)
 	msr.lo |= (1 << 26);	// C1 Auto Demotion Enable
 	msr.lo |= (1 << 25);	// C3 Auto Demotion Enable
 	msr.lo |= (1 << 15);	// Lock bits 15:0
-	msr.lo &= ~(1 << 10);	// Disable IO MWAIT redirection
+	msr.lo |= (1 << 10);	// Enable IO MWAIT redirection
 
 	if (timed_mwait_capable)
 		msr.lo |= (1 << 31);	// Timed MWAIT Enable
@@ -487,6 +502,7 @@ static void configure_misc(void)
 static void set_max_ratio(void)
 {
 	msr_t msr, perf_ctl;
+	unsigned int cap_ratio;
 
 	perf_ctl.hi = 0;
 
@@ -503,6 +519,30 @@ static void set_max_ratio(void)
 		msr = rdmsr(MSR_PLATFORM_INFO);
 		perf_ctl.lo = msr.lo & 0xff00;
 	}
+
+	/* Apply the setup-selected frequency cap (the ACPI _PSS table is
+	   clamped to the same ratio so OS governors respect it too). */
+	cap_ratio = haswell_get_clock_cap_ratio();
+	if (cap_ratio && ((perf_ctl.lo >> 8) & 0xff) > cap_ratio)
+		perf_ctl.lo = cap_ratio << 8;
+
+	/*
+	 * With a cap active, also pull the turbo ratio bins down to the cap.
+	 * Windows XP's intelppm rewrites IA32_MISC_ENABLE and re-enables
+	 * turbo behind our back, and turbo bins sit above the flex ratio by
+	 * definition - clamping the bins themselves closes that hole.
+	 * (Bins reset to fused values on the next cold boot; only touch them
+	 * when the ratio limits are programmable.)
+	 */
+	if (cap_ratio) {
+		msr = rdmsr(MSR_PLATFORM_INFO);
+		if (msr.lo & (1 << 28)) {
+			msr = rdmsr(MSR_TURBO_RATIO_LIMIT);
+			msr.lo = cap_ratio * 0x01010101;	/* 1C..4C bins */
+			wrmsr(MSR_TURBO_RATIO_LIMIT, msr);
+		}
+	}
+
 	wrmsr(IA32_PERF_CTL, perf_ctl);
 
 	printk(BIOS_DEBUG, "CPU: frequency set to %d\n",
@@ -552,7 +592,8 @@ static void cpu_core_init(struct device *cpu)
 	/* Set energy policy */
 	set_energy_perf_bias(ENERGY_POLICY_NORMAL);
 
-	if (get_uint_option("turbo_disable", 0))
+	/* A frequency cap implies no turbo; otherwise honor the turbo option. */
+	if (haswell_get_clock_cap_ratio() || get_uint_option("turbo_disable", 0))
 		disable_turbo();
 	else
 		enable_turbo();
