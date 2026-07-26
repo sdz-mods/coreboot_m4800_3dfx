@@ -135,6 +135,10 @@ enum cb_err mp_run_on_all_cpus_synchronously(void (*func)(void *), void *arg);
  */
 enum cb_err mp_park_aps(void);
 
+/* Weak board override for how a finished AP parks (default: stop_this_cpu).
+   Must never return. */
+void mainboard_park_ap(void);
+
 /*
  * SMM helpers to use with initializing CPUs.
  */

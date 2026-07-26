@@ -171,9 +171,16 @@ static void ap_do_flight_plan(void)
 	}
 }
 
-static void park_this_cpu(void *unused)
+/* Boards may override how finished APs park (e.g. a deep MWAIT so parked
+   cores do not hold the package at C1 and block the top turbo bins). */
+void __weak mainboard_park_ap(void)
 {
 	stop_this_cpu();
+}
+
+static void park_this_cpu(void *unused)
+{
+	mainboard_park_ap();
 }
 
 static struct bus *g_cpu_bus;
