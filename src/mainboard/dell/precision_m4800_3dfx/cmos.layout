@@ -58,8 +58,15 @@ entries
 # coreboot config options: northbridge
 440	8	h	0	volume
 
-# VBOOT
-448	128	r	0	vbnv
+# Bytes 56-71 (bits 448-575): formerly reserved for vboot's vbnv (vboot is
+# not used on this board). Now inside the extended checksum range; keep
+# reserved so future options prefer the fresh space at byte 72 onward.
+448	128	r	0	unused_vbnv
+
+# coreboot config options: CPU (byte 72+)
+576	3	e	23	cpu_clock_cap
+579	1	e	1	hyperthreading
+580	2	e	24	cpu_cores
 
 # coreboot config options: check sums
 984	16	h	0	check_sum
@@ -111,9 +118,20 @@ enumerations
 22	0	Disable
 22	1	LPT1_378_polled
 22	2	LPT2_278_IRQ5
+23	0	Off
+23	1	800MHz
+23	2	1200MHz
+23	3	1600MHz
+23	4	2000MHz
+23	5	2400MHz
+24	0	All
+24	1	1_core
+24	2	2_cores
 
 
 # -----------------------------------------------------------------
 checksums
 
-checksum 408 447 984
+# Extended from 408-447 (bytes 51-55, which are full) to cover the new CPU
+# options at byte 72+. Bytes 56-71 in between are the dead vbnv reservation.
+checksum 408 639 984

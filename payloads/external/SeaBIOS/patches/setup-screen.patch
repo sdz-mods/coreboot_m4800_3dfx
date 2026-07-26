@@ -1,5 +1,5 @@
 diff --git a/src/boot.c b/src/boot.c
-index 1effd802..a87dce5e 100644
+index 1effd802..e1ce30d3 100644
 --- a/src/boot.c
 +++ b/src/boot.c
 @@ -8,9 +8,12 @@
@@ -138,7 +138,7 @@ index 1effd802..a87dce5e 100644
  }
  
  
-@@ -681,6 +755,205 @@ get_keystroke(int msec)
+@@ -681,6 +755,214 @@ get_keystroke(int msec)
   ****************************************************************/
  
  #define DEFAULT_BOOTMENU_WAIT 2500
@@ -179,7 +179,7 @@ index 1effd802..a87dce5e 100644
 +#define SETUP_CMOS_BOOT_DELAY	53
 +#define SETUP_CMOS_USB_FIXED_DISK	51
 +#define SETUP_CMOS_CSUM_START	51
-+#define SETUP_CMOS_CSUM_END	55
++#define SETUP_CMOS_CSUM_END	79
 +#define SETUP_CMOS_CSUM_HIGH	123
 +#define SETUP_CMOS_CSUM_LOW	124
 +#define SETUP_SATA_MODE_DEFAULT	1
@@ -205,7 +205,13 @@ index 1effd802..a87dce5e 100644
 +#define SETUP_CMOS_DOCK_SMM	48
 +#define SETUP_DOCK_SUPERIO_DEFAULT	0
 +#define SETUP_DOCK_SMM_DEFAULT	1
-+#define SETUP_BIOS_VERSION	"M4800-3DFX-0.4"
++/* CPU options share byte 72: clock cap bits[2:0], hyperthreading bit3,
++ * cores bits[5:4]. Applied by coreboot at next boot. */
++#define SETUP_CMOS_CPU		72
++#define SETUP_CLOCK_CAP_DEFAULT	0	/* Off */
++#define SETUP_HT_DEFAULT	1	/* Enabled */
++#define SETUP_CORES_DEFAULT	0	/* All */
++#define SETUP_BIOS_VERSION	"M4800-3DFX-0.5"
 +
 +#define SETUP_ATTR_NORMAL	0x1f
 +#define SETUP_ATTR_SELECT	0x70
@@ -323,6 +329,9 @@ index 1effd802..a87dce5e 100644
 +    u8 turbo_disable;
 +    u8 vga_mux;
 +    u8 sata2;
++    u8 cpu_clock_cap;
++    u8 hyperthreading;
++    u8 cpu_cores;
 +    u8 dock_superio;
 +    u8 dock_smm;
 +    u8 com_port;
@@ -344,7 +353,7 @@ index 1effd802..a87dce5e 100644
  
  static const char menuchars[] = {
      '1', '2', '3', '4', '5', '6', '7', '8', '9',
-@@ -690,153 +963,2618 @@ static const char menuchars[] = {
+@@ -690,153 +972,2753 @@ static const char menuchars[] = {
      'u', 'v', 'w', 'x', 'y', 'z'
  };
  
@@ -816,6 +825,52 @@ index 1effd802..a87dce5e 100644
 +}
 +
 +static u8
++setup_read_clock_cap(void)
++{
++    u8 v = setup_cmos_read(SETUP_CMOS_CPU) & 0x07;
++
++    return v > 5 ? SETUP_CLOCK_CAP_DEFAULT : v;
++}
++
++static u8
++setup_read_ht(void)
++{
++    return (setup_cmos_read(SETUP_CMOS_CPU) >> 3) & 0x01;
++}
++
++static u8
++setup_read_cores(void)
++{
++    u8 v = (setup_cmos_read(SETUP_CMOS_CPU) >> 4) & 0x03;
++
++    return v > 2 ? SETUP_CORES_DEFAULT : v;
++}
++
++static void
++setup_write_clock_cap(u8 v)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_CPU);
++    value = (value & ~0x07) | (v & 0x07);
++    setup_cmos_write(SETUP_CMOS_CPU, value);
++}
++
++static void
++setup_write_ht(u8 v)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_CPU);
++    value = (value & ~(1 << 3)) | ((v & 1) << 3);
++    setup_cmos_write(SETUP_CMOS_CPU, value);
++}
++
++static void
++setup_write_cores(u8 v)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_CPU);
++    value = (value & ~0x30) | ((v & 0x03) << 4);
++    setup_cmos_write(SETUP_CMOS_CPU, value);
++}
++
++static u8
 +setup_read_dock_superio(void)
 +{
 +    return (setup_cmos_read(SETUP_CMOS_DOCK_SUPERIO) >> 6) & 0x01;
@@ -974,6 +1029,9 @@ index 1effd802..a87dce5e 100644
 +    setup_write_turbo_disable(adv->turbo_disable);
 +    setup_write_vga_mux(adv->vga_mux);
 +    setup_write_sata2(adv->sata2);
++    setup_write_clock_cap(adv->cpu_clock_cap);
++    setup_write_ht(adv->hyperthreading);
++    setup_write_cores(adv->cpu_cores);
 +    setup_write_dock_superio(adv->dock_superio);
 +    setup_write_dock_smm(adv->dock_smm);
 +    setup_write_com_port(adv->com_port);
@@ -999,6 +1057,9 @@ index 1effd802..a87dce5e 100644
 +    adv->turbo_disable = SETUP_TURBO_DISABLE_DEFAULT;
 +    adv->vga_mux = SETUP_VGA_MUX_DEFAULT;
 +    adv->sata2 = SETUP_SATA2_DEFAULT;
++    adv->cpu_clock_cap = SETUP_CLOCK_CAP_DEFAULT;
++    adv->hyperthreading = SETUP_HT_DEFAULT;
++    adv->cpu_cores = SETUP_CORES_DEFAULT;
 +    adv->dock_superio = SETUP_DOCK_SUPERIO_DEFAULT;
 +    adv->dock_smm = SETUP_DOCK_SMM_DEFAULT;
 +    adv->com_port = SETUP_COM_PORT_DEFAULT;
@@ -1054,6 +1115,44 @@ index 1effd802..a87dce5e 100644
 +setup_sata2_name(u8 enable)
 +{
 +    return enable ? "Enabled" : "Disabled";
++}
++
++static const char *
++setup_clock_cap_name(u8 v)
++{
++    switch (v) {
++    case 1:
++        return "800 MHz";
++    case 2:
++        return "1.2 GHz";
++    case 3:
++        return "1.6 GHz";
++    case 4:
++        return "2.0 GHz";
++    case 5:
++        return "2.4 GHz";
++    default:
++        return "Off";
++    }
++}
++
++static const char *
++setup_ht_name(u8 enable)
++{
++    return enable ? "Enabled" : "Disabled";
++}
++
++static const char *
++setup_cores_name(u8 v)
++{
++    switch (v) {
++    case 1:
++        return "1";
++    case 2:
++        return "2";
++    default:
++        return "All (4)";
++    }
 +}
 +
 +static const char *
@@ -1995,23 +2094,29 @@ index 1effd802..a87dce5e 100644
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
 +    u8 turbo_attr = adv->selected == 3 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
-+    u8 vga_attr = adv->selected == 4 && focus == SETUP_FOCUS_PAGE
++    u8 cap_attr = adv->selected == 4 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
-+    u8 dock_attr = adv->selected == 5 && focus == SETUP_FOCUS_PAGE
++    u8 ht_attr = adv->selected == 5 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    u8 cores_attr = adv->selected == 6 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    u8 vga_attr = adv->selected == 7 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    u8 dock_attr = adv->selected == 8 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
 +    u8 smm_label_attr = dock_valid ? SETUP_ATTR_NORMAL : SETUP_ATTR_DISABLED;
-+    u8 smm_attr = adv->selected == 6 && focus == SETUP_FOCUS_PAGE
++    u8 smm_attr = adv->selected == 9 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : smm_label_attr;
 +    u8 com_label_attr = dock_valid ? SETUP_ATTR_NORMAL : SETUP_ATTR_DISABLED;
-+    u8 com_attr = adv->selected == 7 && focus == SETUP_FOCUS_PAGE
++    u8 com_attr = adv->selected == 10 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : com_label_attr;
 +    u8 lpt_label_attr = dock_valid ? SETUP_ATTR_NORMAL : SETUP_ATTR_DISABLED;
-+    u8 lpt_attr = adv->selected == 8 && focus == SETUP_FOCUS_PAGE
++    u8 lpt_attr = adv->selected == 11 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : lpt_label_attr;
 +    /* LPT mode only applies with the dock enabled and the parallel port on */
 +    int lptmode_valid = dock_valid && adv->lpt_port != 0;
 +    u8 lptmode_label_attr = lptmode_valid ? SETUP_ATTR_NORMAL : SETUP_ATTR_DISABLED;
-+    u8 lptmode_attr = adv->selected == 9 && focus == SETUP_FOCUS_PAGE
++    u8 lptmode_attr = adv->selected == 12 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : lptmode_label_attr;
 +
 +    setup_clear_page();
@@ -2023,17 +2128,23 @@ index 1effd802..a87dce5e 100644
 +                         SETUP_ATTR_NORMAL, hda_attr);
 +    setup_draw_value_row(9, "CPU Turbo", setup_turbo_name(adv->turbo_disable),
 +                         SETUP_ATTR_NORMAL, turbo_attr);
-+    setup_draw_value_row(10, "VGA Mux", setup_vga_mux_name(adv->vga_mux),
++    setup_draw_value_row(10, "CPU Clock Cap", setup_clock_cap_name(adv->cpu_clock_cap),
++                         SETUP_ATTR_NORMAL, cap_attr);
++    setup_draw_value_row(11, "Hyperthreading", setup_ht_name(adv->hyperthreading),
++                         SETUP_ATTR_NORMAL, ht_attr);
++    setup_draw_value_row(12, "CPU Cores", setup_cores_name(adv->cpu_cores),
++                         SETUP_ATTR_NORMAL, cores_attr);
++    setup_draw_value_row(13, "VGA Mux", setup_vga_mux_name(adv->vga_mux),
 +                         SETUP_ATTR_NORMAL, vga_attr);
-+    setup_draw_value_row(11, "Dock Super I/O", setup_dock_superio_name(adv->dock_superio),
++    setup_draw_value_row(14, "Dock Super I/O", setup_dock_superio_name(adv->dock_superio),
 +                         SETUP_ATTR_NORMAL, dock_attr);
-+    setup_draw_value_row(12, "Undock SMM handler", setup_dock_smm_name(adv->dock_smm),
++    setup_draw_value_row(15, "Undock SMM handler", setup_dock_smm_name(adv->dock_smm),
 +                         smm_label_attr, smm_attr);
-+    setup_draw_value_row(13, "Serial Port (COM)", setup_com_port_name(adv->com_port),
++    setup_draw_value_row(16, "Serial Port (COM)", setup_com_port_name(adv->com_port),
 +                         com_label_attr, com_attr);
-+    setup_draw_value_row(14, "Parallel Port (LPT)", setup_lpt_port_name(adv->lpt_port),
++    setup_draw_value_row(17, "Parallel Port (LPT)", setup_lpt_port_name(adv->lpt_port),
 +                         lpt_label_attr, lpt_attr);
-+    setup_draw_value_row(15, "LPT Mode", setup_lpt_mode_name(adv->lpt_mode),
++    setup_draw_value_row(18, "LPT Mode", setup_lpt_mode_name(adv->lpt_mode),
 +                         lptmode_label_attr, lptmode_attr);
 +    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Save  ESC Reboot  Left/Right Change");
 +}
@@ -2243,30 +2354,48 @@ index 1effd802..a87dce5e 100644
 +                line3 = "";
 +                action = "Press F10 to save, then reboot.";
 +            } else if (adv->selected == 4) {
++                title = "CPU Clock Cap";
++                line1 = "Caps the maximum CPU frequency (also disables";
++                line2 = "turbo). The CPU can still clock lower when idle.";
++                line3 = "Useful to slow down speed-sensitive old software.";
++                action = "Press F10 to save, then reboot.";
++            } else if (adv->selected == 5) {
++                title = "Hyperthreading";
++                line1 = "Disabling hides the second thread of each core";
++                line2 = "from the OS (4 threads instead of 8).";
++                line3 = "";
++                action = "Press F10 to save, then reboot.";
++            } else if (adv->selected == 6) {
++                title = "CPU Cores";
++                line1 = "Number of CPU cores visible to the OS.";
++                line2 = "Combines with Hyperthreading: e.g. 2 cores with";
++                line3 = "HT enabled = 4 visible threads.";
++                action = "Press F10 to save, then reboot.";
++            } else if (adv->selected == 7) {
 +                title = "VGA Mux";
 +                line1 = "Routes the external VGA output.";
 +                line2 = "Connector selects laptop VGA; Dock selects dock VGA.";
 +                line3 = "";
 +                action = "Press F10 to save, then reboot.";
-+            } else if (adv->selected == 5) {
++            } else if (adv->selected == 8) {
 +                title = "Dock Super I/O";
 +                line1 = "Master switch for the docking-station Super I/O.";
 +                line2 = "Disable skips all dock init: no ports, no ACPI,";
 +                line3 = "no SMM undock guard.";
 +                action = "Press F10 to save, then reboot.";
-+            } else if (adv->selected == 6) {
++            } else if (adv->selected == 9) {
 +                title = "Undock SMM handler";
 +                line1 = "Drops dock forwarding from SMM when the laptop";
 +                line2 = "is undocked, so the LPC bus never hangs. Starts";
 +                line3 = "~90 s after boot; undocking earlier is unguarded.";
 +                action = "Press F10 to save, then reboot.";
-+            } else if (adv->selected == 7) {
++            } else if (adv->selected == 10) {
 +                title = "Serial Port (COM)";
 +                line1 = "Docking-station serial port address and IRQ.";
 +                line2 = "COM1/COM3 use IRQ4; COM2/COM4 use IRQ3.";
 +                line3 = "Requires the docking station.";
 +                action = "Press F10 to save, then reboot.";
-+            } else if (adv->selected == 8) {
++            } else if (adv->selected == 11) {
 +                title = "Parallel Port (LPT)";
 +                line1 = "Docking-station parallel port address and IRQ.";
 +                line2 = "LPT1 378h is polled; LPT2 278h uses IRQ5.";
@@ -2399,6 +2528,9 @@ index 1effd802..a87dce5e 100644
 +    adv.turbo_disable = setup_read_turbo_disable();
 +    adv.vga_mux = setup_read_vga_mux();
 +    adv.sata2 = setup_read_sata2();
++    adv.cpu_clock_cap = setup_read_clock_cap();
++    adv.hyperthreading = setup_read_ht();
++    adv.cpu_cores = setup_read_cores();
 +    adv.dock_superio = setup_read_dock_superio();
 +    adv.dock_smm = setup_read_dock_smm();
 +    adv.com_port = setup_read_com_port();
@@ -2536,9 +2668,9 @@ index 1effd802..a87dce5e 100644
 +                    continue;
 +                }
 +                if (scan_code == SETUP_KEY_UP)
-+                    adv.selected = adv.selected == 0 ? 9 : adv.selected - 1;
++                    adv.selected = adv.selected == 0 ? 12 : adv.selected - 1;
 +                else
-+                    adv.selected = adv.selected == 9 ? 0 : adv.selected + 1;
++                    adv.selected = adv.selected == 12 ? 0 : adv.selected + 1;
 +                setup_draw_advanced_page(&adv, focus);
 +                setup_clear_message();
 +                continue;
@@ -2559,20 +2691,32 @@ index 1effd802..a87dce5e 100644
 +                } else if (adv.selected == 3) {
 +                    adv.turbo_disable = !adv.turbo_disable;
 +                } else if (adv.selected == 4) {
-+                    adv.vga_mux = !adv.vga_mux;
++                    if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_MINUS)
++                        adv.cpu_clock_cap = adv.cpu_clock_cap == 0 ? 5 : adv.cpu_clock_cap - 1;
++                    else
++                        adv.cpu_clock_cap = adv.cpu_clock_cap == 5 ? 0 : adv.cpu_clock_cap + 1;
 +                } else if (adv.selected == 5) {
-+                    adv.dock_superio = !adv.dock_superio;
++                    adv.hyperthreading = !adv.hyperthreading;
 +                } else if (adv.selected == 6) {
++                    if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_MINUS)
++                        adv.cpu_cores = adv.cpu_cores == 0 ? 2 : adv.cpu_cores - 1;
++                    else
++                        adv.cpu_cores = adv.cpu_cores == 2 ? 0 : adv.cpu_cores + 1;
++                } else if (adv.selected == 7) {
++                    adv.vga_mux = !adv.vga_mux;
++                } else if (adv.selected == 8) {
++                    adv.dock_superio = !adv.dock_superio;
++                } else if (adv.selected == 9) {
 +                    if (adv.dock_superio)
 +                        adv.dock_smm = !adv.dock_smm;
-+                } else if (adv.selected == 7) {
++                } else if (adv.selected == 10) {
 +                    if (adv.dock_superio) {
 +                        if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_MINUS)
 +                            adv.com_port = adv.com_port == 0 ? 4 : adv.com_port - 1;
 +                        else
 +                            adv.com_port = adv.com_port == 4 ? 0 : adv.com_port + 1;
 +                    }
-+                } else if (adv.selected == 8) {
++                } else if (adv.selected == 11) {
 +                    if (adv.dock_superio) {
 +                        if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_MINUS)
 +                            adv.lpt_port = adv.lpt_port == 0 ? 2 : adv.lpt_port - 1;
@@ -2590,7 +2734,7 @@ index 1effd802..a87dce5e 100644
 +                setup_draw_advanced_page(&adv, focus);
 +                if (adv.selected == 1 && adv.sata_mode != 1)
 +                    setup_message("mSATA Controller requires IDE native mode.");
-+                else if (adv.selected >= 6 && adv.selected <= 9 && !adv.dock_superio)
++                else if (adv.selected >= 9 && adv.selected <= 12 && !adv.dock_superio)
 +                    setup_message("Enable Dock Super I/O first.");
 +            }
 +            if (scan_code == SETUP_KEY_F9) {
@@ -3083,7 +3227,7 @@ index 1effd802..a87dce5e 100644
              map_hd_drive(pos->drive);
              add_bev(IPL_TYPE_HARDDISK, 0);
              break;
-@@ -871,7 +3609,9 @@ call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
+@@ -871,7 +3753,9 @@ call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
      // Set the magic number in ax and the boot drive in dl.
      br.dl = bootdrv;
      br.ax = 0xaa55;
@@ -3093,7 +3237,7 @@ index 1effd802..a87dce5e 100644
  }
  
  // Boot from a disk (either floppy or harddrive)
-@@ -946,7 +3686,9 @@ boot_cbfs(struct cbfs_file *file)
+@@ -946,7 +3830,9 @@ boot_cbfs(struct cbfs_file *file)
      if (!CONFIG_COREBOOT_FLASH)
          return;
      printf("Booting from CBFS...\n");
