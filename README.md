@@ -60,7 +60,7 @@ display adapter.
 ### Platform Controls
 
 - Configurable HDA controller state.
-- Configurable CPU Turbo state.
+- Configurable CPU turbo, clock cap, hyperthreading, core count, and cache.
 - Configurable SATA mode and external VGA destination.
 - Configurable mSATA controller (IDE native mode).
 - Configurable docking-station serial (COM1-4) and parallel
@@ -90,7 +90,7 @@ reimplementing the project.
 | Board ACPI | Provides machine-specific MEC EC, AC adapter, battery, power, platform, Super I/O, and OS-compatibility definitions. |
 | Graphics selection | Disables the Intel iGPU before MRC, removes the Haswell integrated graphics build path, and leaves the MXM adapter as the sole graphics device. |
 | PCI resources | Uses fixed ACPI PCI windows: non-prefetchable MMIO at `0xe0000000-0xefffffff` and prefetchable MMIO at `0xd8000000-0xdfffffff`, with fixed legacy I/O ranges. |
-| CPU power management | Emits legacy ACPI `Processor` objects so Windows XP can bind its SpeedStep drivers and use the generated performance states. |
+| CPU power management | Emits legacy ACPI `Processor` objects so Windows XP can bind its SpeedStep drivers and use the generated performance states. Adds CMOS options for CPU turbo, clock cap, hyperthreading, and enabled core count (1, 2, or 4). A separate CPU cache option, applied by SeaBIOS at the boot handoff, disables all CPU caches for a deliberate slow-down of timing-sensitive DOS games. |
 | SATA | Extends the Lynx Point SATA driver with AHCI, IDE native, and IDE legacy initialization selected from CMOS, with OEM-style fixed I/O BARs in IDE native mode, a separate interrupt pin per SATA function (required by Windows 98's ESDI_506.PDR), and the second SATA function (mSATA) exposed in IDE native mode with a setup option to hide it. |
 | SATA ACPI | Generates mode-specific SATA ACPI objects at runtime, replicating Dell's per-mode SSDT swap: IDE channel and drive objects in IDE mode, AHCI port objects in AHCI mode. |
 | GPIO relocation | Moves GPIOBASE from 0x480 to 0x1c00 (OEM location). The old window shadowed the ELCR trigger-mode registers and ISA DMA high page registers, forcing all PIC-routed interrupts to edge-triggered — the root cause of Windows 98 "delayed write failed" corruption and lost level-triggered interrupts under PIC-mode operating systems. |
@@ -193,7 +193,7 @@ The setup utility contains:
 | --- | --- |
 | Info | System, CPU, memory, 3dfx card, VBIOS, coreboot, and SeaBIOS information |
 | Main | RTC date and time |
-| Advanced | SATA mode, mSATA controller, HDA, CPU Turbo, VGA mux routing, and docking-station serial/parallel ports |
+| Advanced | SATA mode, mSATA controller, HDA, CPU turbo/clock cap/hyperthreading/core count/cache, VGA mux routing, and docking-station serial/parallel ports |
 | Boot | Boot order and boot-prompt delay |
 | 3dfx | MXM card information, telemetry, and persistent card settings |
 | Save & Exit | Save, discard, restore defaults, or reset the MXM card settings |
