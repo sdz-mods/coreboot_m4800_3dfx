@@ -22,3 +22,4 @@ lpt_mode=PS2
 cpu_clock_cap=Off
 hyperthreading=Enable
 cpu_cores=All
+cpu_cache=Enable
