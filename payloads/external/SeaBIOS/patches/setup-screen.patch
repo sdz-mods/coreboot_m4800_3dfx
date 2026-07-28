@@ -1,5 +1,5 @@
 diff --git a/src/boot.c b/src/boot.c
-index 1effd802..517b8752 100644
+index 1effd802..a595c6bf 100644
 --- a/src/boot.c
 +++ b/src/boot.c
 @@ -8,9 +8,12 @@
@@ -23,7 +23,7 @@ index 1effd802..517b8752 100644
  
  /****************************************************************
   * Helper search functions
-@@ -456,11 +460,67 @@ static int BootRetryTime;
+@@ -456,11 +460,81 @@ static int BootRetryTime;
  static int CheckFloppySig = 1;
  
  #define DEFAULT_PRIO           9999
@@ -31,6 +31,9 @@ index 1effd802..517b8752 100644
 +#define SETUP_CMOS_USB_FIXED_DISK	51
 +#define SETUP_USB_FIXED_AUTO	0
 +#define SETUP_USB_FIXED_ALL	1
++#define SETUP_CMOS_SD_FIXED_DISK	51	/* bit 4 (USB uses bit 3) */
++#define SETUP_SD_FIXED_AUTO	0
++#define SETUP_SD_FIXED_ALL	1
  
  static int DefaultFloppyPrio = 101;
  static int DefaultCDPrio     = 102;
@@ -89,10 +92,21 @@ index 1effd802..517b8752 100644
 +
 +    return mode;
 +}
++
++static int
++setup_sd_fixed_disk_mode(void)
++{
++    u8 mode = (setup_cmos_read(SETUP_CMOS_SD_FIXED_DISK) >> 4) & 0x01;
++
++    if (mode > SETUP_SD_FIXED_ALL)
++        mode = SETUP_SD_FIXED_AUTO;
++
++    return mode;
++}
  
  void
  boot_init(void)
-@@ -487,6 +547,8 @@ boot_init(void)
+@@ -487,6 +561,8 @@ boot_init(void)
              case 4: DefaultBEVPrio = i;    break;
              }
          }
@@ -101,7 +115,7 @@ index 1effd802..517b8752 100644
      }
  
      BootRetryTime = romfile_loadint("etc/boot-fail-wait", 60*1000);
-@@ -521,6 +583,13 @@ static struct hlist_head BootList VARVERIFY32INIT;
+@@ -521,6 +597,19 @@ static struct hlist_head BootList VARVERIFY32INIT;
  #define IPL_TYPE_BCV         0x81
  #define IPL_TYPE_HALT        0xf0
  
@@ -112,10 +126,16 @@ index 1effd802..517b8752 100644
 +        || drive->type == DTYPE_UAS || drive->type == DTYPE_UAS_32;
 +}
 +
++static int
++drive_is_sdcard(struct drive_s *drive)
++{
++    return drive->type == DTYPE_SDCARD;
++}
++
  static void
  bootentry_add(int type, int prio, u32 data, const char *desc)
  {
-@@ -593,7 +662,12 @@ boot_add_floppy(struct drive_s *drive, const char *desc, int prio)
+@@ -593,7 +682,12 @@ boot_add_floppy(struct drive_s *drive, const char *desc, int prio)
  void
  boot_add_hd(struct drive_s *drive, const char *desc, int prio)
  {
@@ -129,7 +149,7 @@ index 1effd802..517b8752 100644
                    , (u32)drive, desc);
  }
  
-@@ -618,7 +692,7 @@ boot_add_cd(struct drive_s *drive, const char *desc, int prio)
+@@ -618,7 +712,7 @@ boot_add_cd(struct drive_s *drive, const char *desc, int prio)
  void
  boot_add_cbfs(void *data, const char *desc, int prio)
  {
@@ -138,7 +158,7 @@ index 1effd802..517b8752 100644
  }
  
  
-@@ -681,6 +755,216 @@ get_keystroke(int msec)
+@@ -681,6 +775,218 @@ get_keystroke(int msec)
   ****************************************************************/
  
  #define DEFAULT_BOOTMENU_WAIT 2500
@@ -190,6 +210,7 @@ index 1effd802..517b8752 100644
 +#define SETUP_BOOT_ORDER_DEFAULT	0
 +#define SETUP_BOOT_DELAY_DEFAULT	2
 +#define SETUP_USB_FIXED_DEFAULT	SETUP_USB_FIXED_AUTO
++#define SETUP_SD_FIXED_DEFAULT	SETUP_SD_FIXED_AUTO
 +/* Dock Super I/O (LPC47N237). com_port: byte 53 bits[7:5]; lpt_port: byte 54
 + * bits[5:4]; lpt_mode: byte 54 bits[7:6]. Applied by coreboot at next boot. */
 +#define SETUP_CMOS_COM_PORT	53
@@ -346,6 +367,7 @@ index 1effd802..517b8752 100644
 +    u8 boot_order;
 +    u8 boot_delay;
 +    u8 usb_fixed_disk;
++    u8 sd_fixed_disk;
 +    int selected;
 +};
 +
@@ -355,7 +377,7 @@ index 1effd802..517b8752 100644
  
  static const char menuchars[] = {
      '1', '2', '3', '4', '5', '6', '7', '8', '9',
-@@ -690,188 +974,2838 @@ static const char menuchars[] = {
+@@ -690,188 +996,2879 @@ static const char menuchars[] = {
      'u', 'v', 'w', 'x', 'y', 'z'
  };
  
@@ -856,6 +878,17 @@ index 1effd802..517b8752 100644
 +}
 +
 +static u8
++setup_read_sd_fixed_disk(void)
++{
++    u8 mode = (setup_cmos_read(SETUP_CMOS_SD_FIXED_DISK) >> 4) & 0x01;
++
++    if (mode > SETUP_SD_FIXED_ALL)
++        mode = SETUP_SD_FIXED_DEFAULT;
++
++    return mode;
++}
++
++static u8
 +setup_read_clock_cap(void)
 +{
 +    u8 v = setup_cmos_read(SETUP_CMOS_CPU) & 0x07;
@@ -1040,6 +1073,15 @@ index 1effd802..517b8752 100644
 +}
 +
 +static void
++setup_write_sd_fixed_disk(u8 mode)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_SD_FIXED_DISK);
++
++    value = (value & ~0x10) | ((mode & 0x01) << 4);
++    setup_cmos_write(SETUP_CMOS_SD_FIXED_DISK, value);
++}
++
++static void
 +setup_write_com_port(u8 v)
 +{
 +    u8 value = setup_cmos_read(SETUP_CMOS_COM_PORT);
@@ -1092,6 +1134,7 @@ index 1effd802..517b8752 100644
 +    setup_write_boot_order(boot->boot_order);
 +    setup_write_boot_delay(boot->boot_delay);
 +    setup_write_usb_fixed_disk(boot->usb_fixed_disk);
++    setup_write_sd_fixed_disk(boot->sd_fixed_disk);
 +    setup_cmos_update_checksum();
 +}
 +
@@ -1115,6 +1158,7 @@ index 1effd802..517b8752 100644
 +    boot->boot_order = SETUP_BOOT_ORDER_DEFAULT;
 +    boot->boot_delay = SETUP_BOOT_DELAY_DEFAULT;
 +    boot->usb_fixed_disk = SETUP_USB_FIXED_DEFAULT;
++    boot->sd_fixed_disk = SETUP_SD_FIXED_DEFAULT;
 +}
 +
 +static void
@@ -1948,6 +1992,8 @@ index 1effd802..517b8752 100644
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
 +    u8 usb_attr = boot->selected == 2 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    u8 sd_attr = boot->selected == 3 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
 +
 +    setup_clear_page();
 +    setup_draw_value_row(6, "Boot Order", setup_boot_order_name(boot->boot_order),
@@ -1956,6 +2002,8 @@ index 1effd802..517b8752 100644
 +                         SETUP_ATTR_NORMAL, delay_attr);
 +    setup_draw_value_row(8, "USB Disk Mapping", setup_usb_fixed_disk_name(boot->usb_fixed_disk),
 +                         SETUP_ATTR_NORMAL, usb_attr);
++    setup_draw_value_row(9, "SD Card Mapping", setup_usb_fixed_disk_name(boot->sd_fixed_disk),
++                         SETUP_ATTR_NORMAL, sd_attr);
 +    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Save  ESC Reboot  Left/Right Change");
 +}
 +
@@ -2484,11 +2532,17 @@ index 1effd802..517b8752 100644
 +                line2 = "";
 +                line3 = "";
 +                action = "Press F10 to save.";
-+            } else {
++            } else if (boot->selected == 2) {
 +                title = "USB Disk Mapping";
 +                line1 = "Auto maps only selected USB boot device as fixed.";
 +                line2 = "All maps every USB storage device as fixed.";
 +                line3 = "Use Auto to avoid duplicate USB drives in Win98.";
++                action = "Press F10 to save.";
++            } else {
++                title = "SD Card Mapping";
++                line1 = "Auto maps the SD card as fixed only when booting it.";
++                line2 = "All always maps the SD card as a fixed BIOS disk.";
++                line3 = "Use Auto to avoid a duplicate SD drive in Win98.";
 +                action = "Press F10 to save.";
 +            }
 +        } else if (menu == SETUP_MENU_3DFX) {
@@ -2604,6 +2658,7 @@ index 1effd802..517b8752 100644
 +    boot.boot_order = setup_read_boot_order();
 +    boot.boot_delay = setup_read_boot_delay();
 +    boot.usb_fixed_disk = setup_read_usb_fixed_disk();
++    boot.sd_fixed_disk = setup_read_sd_fixed_disk();
 +    boot.selected = 0;
 +    setup_3dfx_init(&mxm);
 +    setup_3dfx_read_settings(&mxm);
@@ -2824,9 +2879,9 @@ index 1effd802..517b8752 100644
 +                    continue;
 +                }
 +                if (scan_code == SETUP_KEY_UP)
-+                    boot.selected = boot.selected == 0 ? 2 : boot.selected - 1;
++                    boot.selected = boot.selected == 0 ? 3 : boot.selected - 1;
 +                else
-+                    boot.selected = boot.selected == 2 ? 0 : boot.selected + 1;
++                    boot.selected = boot.selected == 3 ? 0 : boot.selected + 1;
 +                setup_draw_boot_page(&boot, focus);
 +                setup_clear_message();
 +                continue;
@@ -2844,8 +2899,10 @@ index 1effd802..517b8752 100644
 +                        boot.boot_delay = boot.boot_delay == 0 ? 3 : boot.boot_delay - 1;
 +                    else
 +                        boot.boot_delay = boot.boot_delay == 3 ? 0 : boot.boot_delay + 1;
-+                } else {
++                } else if (boot.selected == 2) {
 +                    boot.usb_fixed_disk = !boot.usb_fixed_disk;
++                } else {
++                    boot.sd_fixed_disk = !boot.sd_fixed_disk;
 +                }
 +                setup_draw_boot_page(&boot, focus);
 +                continue;
@@ -2854,6 +2911,7 @@ index 1effd802..517b8752 100644
 +                boot.boot_order = SETUP_BOOT_ORDER_DEFAULT;
 +                boot.boot_delay = SETUP_BOOT_DELAY_DEFAULT;
 +                boot.usb_fixed_disk = SETUP_USB_FIXED_DEFAULT;
++                boot.sd_fixed_disk = SETUP_SD_FIXED_DEFAULT;
 +                setup_draw_boot_page(&boot, focus);
 +                setup_message("Boot defaults loaded. Press F10 to save changes.");
 +                continue;
@@ -3272,6 +3330,7 @@ index 1effd802..517b8752 100644
 +
 +    // Map drives and populate BEV list
 +    int usb_fixed_mode = setup_usb_fixed_disk_mode();
++    int sd_fixed_mode = setup_sd_fixed_disk_mode();
 +    int hd_seen = 0;
 +    struct bootentry_s *pos;
 +    hlist_for_each_entry(pos, &BootList, node) {
@@ -3287,6 +3346,10 @@ index 1effd802..517b8752 100644
 +        case IPL_TYPE_HARDDISK:
 +            if (drive_is_usb(pos->drive)) {
 +                if (usb_fixed_mode == SETUP_USB_FIXED_AUTO && hd_seen)
++                    break;
++            }
++            if (drive_is_sdcard(pos->drive)) {
++                if (sd_fixed_mode == SETUP_SD_FIXED_AUTO && hd_seen)
 +                    break;
 +            }
 +            hd_seen = 1;
@@ -3343,7 +3406,7 @@ index 1effd802..517b8752 100644
  }
  
  // Boot from a disk (either floppy or harddrive)
-@@ -946,7 +3880,9 @@ boot_cbfs(struct cbfs_file *file)
+@@ -946,7 +3943,9 @@ boot_cbfs(struct cbfs_file *file)
      if (!CONFIG_COREBOOT_FLASH)
          return;
      printf("Booting from CBFS...\n");
