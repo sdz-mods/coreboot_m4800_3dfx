@@ -123,7 +123,7 @@ The following table records configurations tested with this firmware.
 | Laptop headphone jack | Confirmed[^5] | Confirmed | Confirmed |
 | Ethernet | Confirmed[^6] | Confirmed | Confirmed |
 | Wi-Fi and Bluetooth | X | Confirmed | Confirmed |
-| SD card reader | X | Confirmed | Confirmed |
+| SD card reader | Confirmed[^8] | Confirmed | Confirmed |
 | ExpressCard slot | Confirmed | Confirmed | Confirmed |
 | Internal keyboard and touchpad | Confirmed | Confirmed | Confirmed |
 | Keyboard lock LEDs | Confirmed | Confirmed | Confirmed |
@@ -181,6 +181,9 @@ supported by that operating system.
       driver.
 [^7]: Under Windows 98, the volume up, volume down, and mute media keys require
       [sdz-mods/MKB98](https://github.com/sdz-mods/MKB98).
+[^8]: Under Windows 98, the internal SD card reader requires the
+      [sdz-mods/O2-OZ777_W98](https://github.com/sdz-mods/O2-OZ777_W98)
+      driver.
 
 ## Setup Utility
 
