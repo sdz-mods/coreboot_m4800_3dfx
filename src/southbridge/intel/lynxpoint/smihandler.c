@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
 #include <types.h>
+#include <string.h>
 #include <arch/io.h>
 #include <device/pci_ops.h>
 #include <console/console.h>
@@ -243,6 +244,100 @@ static void southbridge_smi_store(void)
 	io_smi->rax = ret;
 }
 
+/*
+ * SeaBIOS "call32" service: run a 32-bit BIOS function from 16-bit/V86 mode.
+ *
+ * Some INT13 disk paths (AHCI, NVMe, ...) can only touch their controller from
+ * 32-bit mode. SeaBIOS's direct 16->32 switch (C16_BIG) works in real mode but
+ * NOT in V86 mode - so once an OS runs BIOS INT13 from V86 (Windows 9x DOS/
+ * compatibility mode, EMM386, ...) AHCI disk access hangs. SeaBIOS's fix is a
+ * SMM trampoline (C16_SMM), but that needs SeaBIOS to own the SMI handler,
+ * which it cannot on coreboot (we own and lock SMM). So we provide the service
+ * from coreboot's handler instead, keeping SMM ownership, the dock handler,
+ * ACPI-enable and SMRAM lock intact.
+ *
+ * Protocol (matches SeaBIOS src/stacks.c call32_smm + a CAPTURE we added):
+ *   APMC cmd 0xB5, sub-command in ECX, target EIP in EBX:
+ *     CAPTURE (0x9ABC): snapshot the caller's (SeaBIOS 32-bit-flat) save state
+ *                       into backup1; ack in EDX so SeaBIOS enables the service.
+ *     ENTER   (0x1234): save caller -> backup2, load backup1 (32-bit-flat mode
+ *                       incl. hidden segment descriptors), carry the caller's
+ *                       GP regs, resume at EIP=EBX -> runs the 32-bit function.
+ *     RETURN  (0x5678): restore backup2, carry GP regs, resume at EIP=EBX.
+ * The em64t101 save state is exactly one 0x400-byte Intel save-state region, so
+ * a whole-struct copy carries the hidden segment state that RSM restores.
+ */
+#define APM_CNT_CALL32SMM	0xb5
+#define CALL32SMM_CAPTUREID	0x9abc
+#define CALL32SMM_ENTERID	0x1234
+#define CALL32SMM_RETURNID	0x5678
+#define CALL32SMM_ACK		0x600dca11
+
+static em64t101_smm_state_save_area_t c32_backup1, c32_backup2;
+static int c32_have_backup1;
+static int c32_backup_a20;
+
+/* Fast A20 gate (port 0x92 bit 1). Never touch bit 0 (fast INIT/reset). */
+static int smm_set_a20(int on)
+{
+	u8 v = inb(0x92);
+	int prev = (v >> 1) & 1;
+	v = (on ? (v | (1 << 1)) : (v & ~(1 << 1))) & ~(1 << 0);
+	outb(v, 0x92);
+	return prev;
+}
+
+static void c32_carry_gp(em64t101_smm_state_save_area_t *d, const u64 *gp)
+{
+	d->rax = gp[0]; d->rcx = gp[1]; d->rdx = gp[2]; d->rbx = gp[3];
+	d->rsp = gp[4]; d->rbp = gp[5]; d->rsi = gp[6]; d->rdi = gp[7];
+}
+
+static void southbridge_smi_call32(void)
+{
+	em64t101_smm_state_save_area_t *s =
+		smi_apmc_find_state_save(APM_CNT_CALL32SMM);
+	if (!s)
+		return;
+
+	const u64 gp[8] = { s->rax, s->rcx, s->rdx, s->rbx,
+			    s->rsp, s->rbp, s->rsi, s->rdi };
+
+	switch ((u32)s->rcx) {
+	case CALL32SMM_CAPTUREID:
+		memcpy(&c32_backup1, s, sizeof(c32_backup1));
+		c32_have_backup1 = 1;
+		s->rdx = CALL32SMM_ACK;		/* leave RIP: resume past the OUT */
+		break;
+	case CALL32SMM_ENTERID:
+		if (!c32_have_backup1)
+			break;
+		memcpy(&c32_backup2, s, sizeof(c32_backup2));	/* save caller */
+		memcpy(s, &c32_backup1, sizeof(*s));		/* load 32-bit flat */
+		c32_carry_gp(s, gp);				/* caller GP regs */
+		s->rip = gp[3];					/* EBX = target */
+		/*
+		 * Run the 32-bit function with interrupts disabled, matching
+		 * SeaBIOS's own real-mode switch (transition32 does 'cli').
+		 * The call32 targets (AHCI/USB/...) are polled I/O and never
+		 * need interrupts; if IF stays set, a maskable IRQ - notably
+		 * the ~55ms DOS timer tick when an OS drives INT13 from V86
+		 * (Win98 compat mode, EMM386) - lands in SeaBIOS's POST IDT
+		 * while the CPU is in 32-bit mode and wedges the transfer.
+		 */
+		s->rflags &= ~(u64)(1 << 9);			/* IF = 0 */
+		c32_backup_a20 = smm_set_a20(1);
+		break;
+	case CALL32SMM_RETURNID:
+		memcpy(s, &c32_backup2, sizeof(*s));		/* restore caller */
+		c32_carry_gp(s, gp);
+		s->rip = gp[3];
+		if (!c32_backup_a20)
+			smm_set_a20(0);
+		break;
+	}
+}
+
 static void southbridge_smi_apmc(void)
 {
 	u8 reg8;
@@ -250,6 +345,9 @@ static void southbridge_smi_apmc(void)
 
 	reg8 = apm_get_apmc();
 	switch (reg8) {
+	case APM_CNT_CALL32SMM:
+		southbridge_smi_call32();
+		break;
 	case APM_CNT_FINALIZE:
 		if (chipset_finalized) {
 			printk(BIOS_DEBUG, "SMI#: Already finalized\n");

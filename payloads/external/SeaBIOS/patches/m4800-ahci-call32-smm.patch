@@ -1,0 +1,115 @@
+diff --git a/src/Kconfig b/src/Kconfig
+index 3a8ffa15..76a39fc4 100644
+--- a/src/Kconfig
++++ b/src/Kconfig
+@@ -352,7 +352,7 @@ menu "Hardware support"
+             Support System Management Mode (on emulators).
+     config CALL32_SMM
+         bool
+-        depends on USE_SMM
++        depends on USE_SMM || COREBOOT
+         default y
+     config MTRR_INIT
+         depends on QEMU
+diff --git a/src/fw/coreboot.c b/src/fw/coreboot.c
+index 7c0954b5..9d55397b 100644
+--- a/src/fw/coreboot.c
++++ b/src/fw/coreboot.c
+@@ -271,6 +271,42 @@ coreboot_platform_setup(void)
+     }
+ 
+     find_acpi_features();
++
++    coreboot_call32_smm_setup();
++}
++
++// Enable coreboot's SMM "call32" service.
++//
++// SeaBIOS runs 32bit INT13 handlers (AHCI, NVMe, USB, SCSI, ...) by switching
++// from 16bit to 32bit mode. Its plain switch (C16_BIG) works from real mode but
++// NOT from V86 mode, so once an OS drives BIOS disk I/O from V86 (Windows 9x
++// compatibility/DOS mode, EMM386, ...) those controllers hang. The robust fix
++// is the SMM trampoline (C16_SMM), but that needs ownership of the SMI handler,
++// which the payload does not have on coreboot. Instead coreboot's own SMM
++// handler implements the call32 protocol (APMC cmd 0xb5), so we just perform
++// the capture handshake here and enable HaveSmmCall32. If coreboot doesn't
++// answer (older firmware), edx is unchanged and we leave the service off - the
++// C16_BIG path keeps working exactly as before for the real-mode case.
++void
++coreboot_call32_smm_setup(void)
++{
++    if (!CONFIG_CALL32_SMM)
++        return;
++
++    u32 eax = CALL32SMM_CMDID, ecx = CALL32SMM_CAPTUREID, edx = 0;
++    asm volatile(
++        "outb %%al, $" __stringify(PORT_SMI_CMD) "\n"
++        : "+a"(eax), "+c"(ecx), "+d"(edx)
++        :
++        : "cc", "memory");
++
++    if (edx != CALL32SMM_CAPTURE_ACK) {
++        dprintf(1, "coreboot call32 SMM service not available (edx=%x)\n", edx);
++        return;
++    }
++
++    HaveSmmCall32 = 1;
++    dprintf(1, "coreboot call32 SMM service enabled\n");
+ }
+ 
+ 
+diff --git a/src/stacks.c b/src/stacks.c
+index 4c8e5df6..df444005 100644
+--- a/src/stacks.c
++++ b/src/stacks.c
+@@ -239,7 +239,14 @@ u32 VISIBLE16
+ __call32(void *func, u32 eax, u32 errret)
+ {
+     ASSERT16();
+-    if (CONFIG_CALL32_SMM && GET_GLOBAL(HaveSmmCall32))
++    // The SMM trampoline (call32_smm) is only needed in V86/protected mode,
++    // where the direct big-real-mode switch (C16_BIG) below cannot run. In
++    // plain real mode C16_BIG works and is far cheaper than taking an SMI per
++    // call - so prefer it there. This also avoids flooding the platform SMI
++    // handler with rendezvous SMIs during a disk-heavy real-mode boot (e.g.
++    // GRUB loading a kernel from AHCI), which on coreboot only needs the SMM
++    // path once an OS actually drives INT13 from V86.
++    if (CONFIG_CALL32_SMM && GET_GLOBAL(HaveSmmCall32) && (cr0_read() & CR0_PE))
+         return call32_smm(func, eax);
+     // Jump direclty to 32bit mode - this clobbers the 16bit segment
+     // selector registers.
+@@ -611,6 +618,17 @@ check_irqs(void)
+         cpu_relax();
+         return;
+     }
++    if (!MODESEGMENT && CONFIG_CALL32_SMM && Call16Data.method == C16_SMM) {
++        // Running a 32bit function via the coreboot SMM call32 trampoline
++        // (the AHCI/etc INT13 path when an OS drives it from V86 - Win98
++        // compat mode, EMM386). That borrowed context cannot safely take a
++        // hardware interrupt: a stray IRQ (e.g. the ~55ms DOS timer tick)
++        // vectors through the trampoline's IDT/stack and corrupts memory.
++        // The callers here poll hardware status with a hardware-timer
++        // timeout, so just spin instead of briefly enabling interrupts.
++        cpu_relax();
++        return;
++    }
+     if (need_hop_back()) {
+         stack_hop_back(check_irqs, 0, 0);
+         return;
+diff --git a/src/stacks.h b/src/stacks.h
+index c71bdc8e..a8e5e7e2 100644
+--- a/src/stacks.h
++++ b/src/stacks.h
+@@ -7,6 +7,12 @@
+ #define CALL32SMM_CMDID    0xb5
+ #define CALL32SMM_ENTERID  0x1234
+ #define CALL32SMM_RETURNID 0x5678
++// coreboot-provided call32 service (see src/fw/coreboot.c): the payload asks
++// coreboot's SMM handler to snapshot our 32bit-flat state as the trampoline
++// target, and coreboot acks in edx so we know the service is present.
++#define CALL32SMM_CAPTUREID  0x9abc
++#define CALL32SMM_CAPTURE_ACK 0x600dca11
++void coreboot_call32_smm_setup(void);
+ 
+ // stacks.c
+ extern int HaveSmmCall32;

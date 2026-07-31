@@ -114,7 +114,7 @@ The following table records configurations tested with this firmware.
 | :--- | :---: | :---: | :---: |
 | USB 2.0 | Confirmed | Confirmed | Confirmed |
 | USB 3.0 | X | Confirmed | Confirmed |
-| SATA HDD/SSD in AHCI mode | X | Confirmed | Confirmed |
+| SATA HDD/SSD in AHCI mode | Confirmed | Confirmed | Confirmed |
 | SATA HDD/SSD in IDE native mode | Confirmed | Confirmed | Confirmed |
 | SATA HDD/SSD in IDE legacy mode | Confirmed | Confirmed | Confirmed |
 | SATA ODD | Confirmed | Confirmed | Confirmed |
