@@ -145,12 +145,20 @@ static void sata_init(struct device *dev)
 	}
 
 	/* Set Interrupt Line. Interrupt Pin is set by D31IP.PIP. */
-	if (sata_mode == SATA_MODE_IDE_NATIVE) {
+	if (sata_mode == SATA_MODE_IDE_NATIVE || ahci_mode) {
 		/*
-		 * SATA1 on INTB (PIRQD/IRQ5), SATA2 on INTC (PIRQC/IRQ10):
-		 * a dedicated interrupt per controller keeps Win98's
-		 * ESDI_506.PDR away from two disk controllers on one line.
-		 * (OEM uses INTB for both.)
+		 * Route the SATA controller through INTB -> PIRQD -> ACPI link
+		 * LNKD (IRQ 6 under a legacy OS) in both AHCI and IDE-native mode.
+		 *
+		 * IDE-native: SATA1 on INTB, SATA2 on INTC, so each disk
+		 * controller gets a dedicated interrupt and Win98's ESDI_506.PDR
+		 * never sees two controllers on one line. (OEM uses INTB for both.)
+		 *
+		 * AHCI: pin the single controller to the same dedicated LNKD
+		 * instead of the hardware default (INTA -> PIRQF -> LNKF). That
+		 * keeps a legacy OS from parking AHCI in the low-IRQ pool the dock
+		 * Super I/O and USB EHCI controllers contend for - the shared
+		 * AHCI+USB interrupt that hangs shutdown.
 		 */
 		RCBA32_AND_OR(D31IP,
 			      ~((0xf << D31IP_SIP) | (0xf << D31IP_SIP2)),
