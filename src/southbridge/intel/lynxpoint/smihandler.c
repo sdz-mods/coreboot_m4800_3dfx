@@ -276,6 +276,17 @@ static void southbridge_smi_store(void)
 static em64t101_smm_state_save_area_t c32_backup1, c32_backup2;
 static int c32_have_backup1;
 static int c32_backup_a20;
+static int c32_swsmi_saved;	/* SWSMI_TMR_EN masked across a call32 window */
+
+/*
+ * Non-zero while a call32 transaction is in flight (between ENTER and RETURN),
+ * i.e. while the CPU is running the borrowed 32-bit context. Other SMI sources
+ * that share this handler must not disturb that context; the SW-SMI-timer dock
+ * poll (mainboard_smi_swsmi_tmr) checks this and skips its EC/LPC access. APMC
+ * is dispatched before SWSMI_TMR (bit 5 vs 6), so a same-SMI collision still
+ * sees the flag set.
+ */
+int call32_smm_in_flight;
 
 /* Fast A20 gate (port 0x92 bit 1). Never touch bit 0 (fast INIT/reset). */
 static int smm_set_a20(int on)
@@ -327,6 +338,20 @@ static void southbridge_smi_call32(void)
 		 */
 		s->rflags &= ~(u64)(1 << 9);			/* IF = 0 */
 		c32_backup_a20 = smm_set_a20(1);
+		call32_smm_in_flight = 1;
+		/*
+		 * Silence the periodic SW-SMI timer for the 32-bit window. Even
+		 * with its handler's work skipped, merely taking that SMI on the
+		 * borrowed call32 context wedges the transfer - so mask the source
+		 * outright. RETURN restores it. (APMC is dispatched before
+		 * SWSMI_TMR, so if both are pending in one SMI this disable wins.)
+		 */
+		{
+			u16 pmbase = get_pmbase();
+			u32 smi_en = inl(pmbase + SMI_EN);
+			c32_swsmi_saved = smi_en & SWSMI_TMR_EN;
+			outl(smi_en & ~SWSMI_TMR_EN, pmbase + SMI_EN);
+		}
 		break;
 	case CALL32SMM_RETURNID:
 		memcpy(s, &c32_backup2, sizeof(*s));		/* restore caller */
@@ -345,6 +370,13 @@ static void southbridge_smi_call32(void)
 		s->rip = gp[3] & 0xffff;
 		if (!c32_backup_a20)
 			smm_set_a20(0);
+		call32_smm_in_flight = 0;
+		/* Re-arm the SW-SMI timer masked at ENTER (0->1 edge arms it). */
+		if (c32_swsmi_saved) {
+			u16 pmbase = get_pmbase();
+			outl(inl(pmbase + SMI_EN) | SWSMI_TMR_EN, pmbase + SMI_EN);
+			c32_swsmi_saved = 0;
+		}
 		break;
 	}
 }

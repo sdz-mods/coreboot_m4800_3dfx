@@ -45,6 +45,10 @@
  */
 #define DOCK_GRACE_TICKS	5625
 
+/* Set in the lynxpoint SMI handler while a SeaBIOS call32 transaction runs on
+   the borrowed 32-bit context; touching the EC over LPC then can wedge it. */
+extern int call32_smm_in_flight;
+
 /* Read one EC RAM byte, but only if the OS is not using the EC right now.
    Returns 0 with *val on success, -1 to skip this tick. */
 static int ec_read(u8 addr, u8 *val)
@@ -80,6 +84,13 @@ void mainboard_smi_swsmi_tmr(void)
 		grace++;
 		goto rearm;
 	}
+
+	/* While a call32 transaction is in flight the ENTER handler has masked
+	   this timer and RETURN re-arms it. Do nothing so that management stands
+	   (re-arming here would race it and could let the timer fire on the
+	   borrowed 32-bit context). The dock state is caught on a later tick. */
+	if (call32_smm_in_flight)
+		return;
 
 	if (ec_read(EC_DOCK_BYTE, &dock) == 0) {
 		if (dock == 0x01) {
