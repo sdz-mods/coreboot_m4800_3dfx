@@ -331,7 +331,18 @@ static void southbridge_smi_call32(void)
 	case CALL32SMM_RETURNID:
 		memcpy(s, &c32_backup2, sizeof(*s));		/* restore caller */
 		c32_carry_gp(s, gp);
-		s->rip = gp[3];
+		/*
+		 * A RETURN always resumes a 16-bit context (real/V86/big-real),
+		 * so the target in EBX is a segment offset below 64 KiB. SeaBIOS
+		 * loads it with a 32-bit 'movl $off,%ebx'; if that ever executes
+		 * with a 16-bit operand size it writes only BX and leaves a stale
+		 * high word from the prior ENTER's flat target (BUILD_BIOS_ADDR |
+		 * off). Resuming a V86 caller at that inflated RIP exceeds the
+		 * 64 KiB segment limit and #GPs (seen as JemmEx exception 0D at
+		 * F000:000Fxxxx when an OS drives INT13 from V86). Mask to the
+		 * 16-bit offset the caller actually intends.
+		 */
+		s->rip = gp[3] & 0xffff;
 		if (!c32_backup_a20)
 			smm_set_a20(0);
 		break;
