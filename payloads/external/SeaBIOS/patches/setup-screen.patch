@@ -1,5 +1,5 @@
 diff --git a/src/boot.c b/src/boot.c
-index 1effd802..a595c6bf 100644
+index 1effd802..e5490ff4 100644
 --- a/src/boot.c
 +++ b/src/boot.c
 @@ -8,9 +8,12 @@
@@ -377,7 +377,7 @@ index 1effd802..a595c6bf 100644
  
  static const char menuchars[] = {
      '1', '2', '3', '4', '5', '6', '7', '8', '9',
-@@ -690,188 +996,2879 @@ static const char menuchars[] = {
+@@ -690,188 +996,2880 @@ static const char menuchars[] = {
      'u', 'v', 'w', 'x', 'y', 'z'
  };
  
@@ -2436,9 +2436,9 @@ index 1effd802..a595c6bf 100644
 +        } else if (menu == SETUP_MENU_ADVANCED) {
 +            if (adv->selected == 0) {
 +                title = "SATA Mode";
-+                line1 = "AHCI is recommended for NT-based Windows and Linux.";
-+                line2 = "IDE native is recommended for Windows 98, and also";
-+                line3 = "works with NT-based Windows and Linux.";
++                line1 = "AHCI or IDE native are recommended for Windows 98,";
++                line2 = "Windows XP, and Linux.";
++                line3 = "";
 +                action = "Press F10 to save, then reboot.";
 +            } else if (adv->selected == 1) {
 +                title = "mSATA Controller";
@@ -2798,10 +2798,11 @@ index 1effd802..a595c6bf 100644
 +                || scan_code == SETUP_KEY_MINUS || scan_code == SETUP_KEY_PLUS
 +                || scan_code == SETUP_KEY_ENTER) {
 +                if (adv.selected == 0) {
-+                    if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_MINUS)
-+                        adv.sata_mode = adv.sata_mode == 0 ? 2 : adv.sata_mode - 1;
-+                    else
-+                        adv.sata_mode = adv.sata_mode == 2 ? 0 : adv.sata_mode + 1;
++                    /* IDE legacy (2) is intentionally not selectable from
++                       setup: its fixed IRQ 14/15 causes conflicts. The mode
++                       still works and can be set out-of-band via CMOS for
++                       debugging. Toggle only AHCI (0) <-> IDE native (1). */
++                    adv.sata_mode = adv.sata_mode == 1 ? 0 : 1;
 +                } else if (adv.selected == 1) {
 +                    if (adv.sata_mode == 1)
 +                        adv.sata2 = !adv.sata2;
@@ -3406,7 +3407,7 @@ index 1effd802..a595c6bf 100644
  }
  
  // Boot from a disk (either floppy or harddrive)
-@@ -946,7 +3943,9 @@ boot_cbfs(struct cbfs_file *file)
+@@ -946,7 +3944,9 @@ boot_cbfs(struct cbfs_file *file)
      if (!CONFIG_COREBOOT_FLASH)
          return;
      printf("Booting from CBFS...\n");
