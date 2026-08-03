@@ -1,5 +1,5 @@
 diff --git a/src/boot.c b/src/boot.c
-index 1effd802..e5490ff4 100644
+index 1effd802..617a8d44 100644
 --- a/src/boot.c
 +++ b/src/boot.c
 @@ -8,9 +8,12 @@
@@ -158,7 +158,7 @@ index 1effd802..e5490ff4 100644
  }
  
  
-@@ -681,6 +775,218 @@ get_keystroke(int msec)
+@@ -681,6 +775,229 @@ get_keystroke(int msec)
   ****************************************************************/
  
  #define DEFAULT_BOOTMENU_WAIT 2500
@@ -226,6 +226,14 @@ index 1effd802..e5490ff4 100644
 +#define SETUP_CMOS_DOCK_SMM	48
 +#define SETUP_DOCK_SUPERIO_DEFAULT	0
 +#define SETUP_DOCK_SMM_DEFAULT	1
++
++/* Radio enables share CMOS byte 51 with dock_superio: bit 7 WLAN, bit 5 WWAN
++   (SWLAN, on the mSATA connector), bit 4 Bluetooth. Default enabled. */
++#define SETUP_CMOS_RADIO	51
++#define SETUP_RADIO_WLAN_BIT	7
++#define SETUP_RADIO_WWAN_BIT	5
++#define SETUP_RADIO_BT_BIT	4
++#define SETUP_RADIO_DEFAULT	1
 +/* CPU options share byte 72: clock cap bits[2:0], hyperthreading bit3,
 + * cores bits[5:4], cache bit6. Applied by coreboot at next boot. */
 +#define SETUP_CMOS_CPU		72
@@ -357,6 +365,9 @@ index 1effd802..e5490ff4 100644
 +    u8 cpu_cache;
 +    u8 dock_superio;
 +    u8 dock_smm;
++    u8 wlan;
++    u8 wwan;
++    u8 bluetooth;
 +    u8 com_port;
 +    u8 lpt_port;
 +    u8 lpt_mode;
@@ -377,7 +388,7 @@ index 1effd802..e5490ff4 100644
  
  static const char menuchars[] = {
      '1', '2', '3', '4', '5', '6', '7', '8', '9',
-@@ -690,188 +996,2880 @@ static const char menuchars[] = {
+@@ -690,188 +1007,2954 @@ static const char menuchars[] = {
      'u', 'v', 'w', 'x', 'y', 'z'
  };
  
@@ -646,12 +657,16 @@ index 1effd802..e5490ff4 100644
 -            add_bev(pos->type, pos->data);
 -            break;
 -        }
+-    }
 +static void
 +setup_help_popup(const char *title, const char *line1, const char *line2,
 +                 const char *line3, const char *action)
 +{
 +    int row;
-+
+ 
+-    // If nothing added a floppy/hd boot - add it manually.
+-    add_bev(IPL_TYPE_FLOPPY, 0);
+-    add_bev(IPL_TYPE_HARDDISK, 0);
 +    for (row = 8; row <= 17; row++)
 +        setup_puts_attr(row, 12,
 +                        "                                                        ",
@@ -666,15 +681,18 @@ index 1effd802..e5490ff4 100644
 +
 +    while (get_keystroke_full(1000) < 0)
 +        ;
-+}
-+
+ }
+ 
 +static void
 +setup_draw_value_row(u8 row, const char *name, const char *value,
 +                     u8 label_attr, u8 value_attr)
 +{
 +    int len;
 +    int i;
-+
+ 
+-/****************************************************************
+- * Boot code (int 18/19)
+- ****************************************************************/
 +    for (len = strlen(value); len > 0 && value[len - 1] == ' '; len--)
 +        ;
 +    if (len > 43)
@@ -686,28 +704,30 @@ index 1effd802..e5490ff4 100644
 +    for (i = 0; i < len; i++) {
 +        char ch[2] = { value[i], '\0' };
 +        setup_puts_attr(row, SETUP_VALUE_COL + 1 + i, ch, value_attr);
-     }
++    }
 +    setup_puts_attr(row, SETUP_VALUE_COL + 1 + len, "]", value_attr);
 +}
- 
--    // If nothing added a floppy/hd boot - add it manually.
--    add_bev(IPL_TYPE_FLOPPY, 0);
--    add_bev(IPL_TYPE_HARDDISK, 0);
++
 +static u8
 +setup_bcd_to_bin(u8 val)
 +{
 +    return (val & 0x0f) + ((val >> 4) * 10);
- }
++}
  
-+static void
+-// Jump to a bootup entry point.
+ static void
+-call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
 +setup_write_datetime(const struct setup_datetime_state *dt);
- 
--/****************************************************************
-- * Boot code (int 18/19)
-- ****************************************************************/
++
 +static void
 +setup_read_datetime(struct setup_datetime_state *dt)
-+{
+ {
+-    dprintf(1, "Booting from %04x:%04x\n", bootsegip.seg, bootsegip.offset);
+-    struct bregs br;
+-    memset(&br, 0, sizeof(br));
+-    br.flags = F_IF;
+-    br.code = bootsegip;
+-    // Set the magic number in ax and the boot drive in dl.
 +    u8 status_b;
 +    u8 year;
 +
@@ -751,20 +771,10 @@ index 1effd802..e5490ff4 100644
 +{
 +    return ((val / 10) << 4) | (val % 10);
 +}
- 
--// Jump to a bootup entry point.
- static void
--call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
++
++static void
 +setup_write_datetime(const struct setup_datetime_state *dt)
- {
--    dprintf(1, "Booting from %04x:%04x\n", bootsegip.seg, bootsegip.offset);
--    struct bregs br;
--    memset(&br, 0, sizeof(br));
--    br.flags = F_IF;
--    br.code = bootsegip;
--    // Set the magic number in ax and the boot drive in dl.
--    br.dl = bootdrv;
--    br.ax = 0xaa55;
++{
 +    u8 status_b = rtc_read(CMOS_STATUS_B);
 +    u8 sec = dt->sec;
 +    u8 min = dt->min;
@@ -960,6 +970,24 @@ index 1effd802..e5490ff4 100644
 +    return (setup_cmos_read(SETUP_CMOS_DOCK_SMM) >> 1) & 0x01;
 +}
 +
++static u8
++setup_read_wlan(void)
++{
++    return (setup_cmos_read(SETUP_CMOS_RADIO) >> SETUP_RADIO_WLAN_BIT) & 0x01;
++}
++
++static u8
++setup_read_wwan(void)
++{
++    return (setup_cmos_read(SETUP_CMOS_RADIO) >> SETUP_RADIO_WWAN_BIT) & 0x01;
++}
++
++static u8
++setup_read_bluetooth(void)
++{
++    return (setup_cmos_read(SETUP_CMOS_RADIO) >> SETUP_RADIO_BT_BIT) & 0x01;
++}
++
 +static void
 +setup_write_dock_superio(u8 v)
 +{
@@ -974,6 +1002,30 @@ index 1effd802..e5490ff4 100644
 +    u8 value = setup_cmos_read(SETUP_CMOS_DOCK_SMM);
 +    value = (value & ~(1 << 1)) | ((v & 1) << 1);
 +    setup_cmos_write(SETUP_CMOS_DOCK_SMM, value);
++}
++
++static void
++setup_write_wlan(u8 v)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_RADIO);
++    value = (value & ~(1 << SETUP_RADIO_WLAN_BIT)) | ((v & 1) << SETUP_RADIO_WLAN_BIT);
++    setup_cmos_write(SETUP_CMOS_RADIO, value);
++}
++
++static void
++setup_write_wwan(u8 v)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_RADIO);
++    value = (value & ~(1 << SETUP_RADIO_WWAN_BIT)) | ((v & 1) << SETUP_RADIO_WWAN_BIT);
++    setup_cmos_write(SETUP_CMOS_RADIO, value);
++}
++
++static void
++setup_write_bluetooth(u8 v)
++{
++    u8 value = setup_cmos_read(SETUP_CMOS_RADIO);
++    value = (value & ~(1 << SETUP_RADIO_BT_BIT)) | ((v & 1) << SETUP_RADIO_BT_BIT);
++    setup_cmos_write(SETUP_CMOS_RADIO, value);
 +}
 +
 +static u8
@@ -1125,6 +1177,9 @@ index 1effd802..e5490ff4 100644
 +    setup_write_com_port(adv->com_port);
 +    setup_write_lpt_port(adv->lpt_port);
 +    setup_write_lpt_mode(adv->lpt_mode);
++    setup_write_wlan(adv->wlan);
++    setup_write_wwan(adv->wwan);
++    setup_write_bluetooth(adv->bluetooth);
 +    setup_cmos_update_checksum();
 +}
 +
@@ -1155,6 +1210,9 @@ index 1effd802..e5490ff4 100644
 +    adv->com_port = SETUP_COM_PORT_DEFAULT;
 +    adv->lpt_port = SETUP_LPT_PORT_DEFAULT;
 +    adv->lpt_mode = SETUP_LPT_MODE_DEFAULT;
++    adv->wlan = SETUP_RADIO_DEFAULT;
++    adv->wwan = SETUP_RADIO_DEFAULT;
++    adv->bluetooth = SETUP_RADIO_DEFAULT;
 +    boot->boot_order = SETUP_BOOT_ORDER_DEFAULT;
 +    boot->boot_delay = SETUP_BOOT_DELAY_DEFAULT;
 +    boot->usb_fixed_disk = SETUP_USB_FIXED_DEFAULT;
@@ -1194,12 +1252,6 @@ index 1effd802..e5490ff4 100644
 +setup_turbo_name(u8 disable)
 +{
 +    return disable ? "Disabled" : "Enabled";
-+}
-+
-+static const char *
-+setup_vga_mux_name(u8 target)
-+{
-+    return target ? "Dock" : "VGA connector";
 +}
 +
 +static const char *
@@ -1260,6 +1312,12 @@ index 1effd802..e5490ff4 100644
 +
 +static const char *
 +setup_dock_smm_name(u8 enable)
++{
++    return enable ? "Enabled" : "Disabled";
++}
++
++static const char *
++setup_radio_name(u8 enable)
 +{
 +    return enable ? "Enabled" : "Disabled";
 +}
@@ -2203,24 +2261,28 @@ index 1effd802..e5490ff4 100644
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
 +    u8 cache_attr = adv->selected == 7 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
-+    u8 vga_attr = adv->selected == 8 && focus == SETUP_FOCUS_PAGE
++    u8 dock_attr = adv->selected == 8 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
-+    u8 dock_attr = adv->selected == 9 && focus == SETUP_FOCUS_PAGE
-+        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
-+    u8 smm_label_attr = dock_valid ? SETUP_ATTR_NORMAL : SETUP_ATTR_DISABLED;
-+    u8 smm_attr = adv->selected == 10 && focus == SETUP_FOCUS_PAGE
-+        ? SETUP_ATTR_SELECT : smm_label_attr;
++    u8 smm_label_attr = SETUP_ATTR_NORMAL;	/* RFKILL: not gated by the dock */
 +    u8 com_label_attr = dock_valid ? SETUP_ATTR_NORMAL : SETUP_ATTR_DISABLED;
-+    u8 com_attr = adv->selected == 11 && focus == SETUP_FOCUS_PAGE
++    u8 com_attr = adv->selected == 9 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : com_label_attr;
 +    u8 lpt_label_attr = dock_valid ? SETUP_ATTR_NORMAL : SETUP_ATTR_DISABLED;
-+    u8 lpt_attr = adv->selected == 12 && focus == SETUP_FOCUS_PAGE
++    u8 lpt_attr = adv->selected == 10 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : lpt_label_attr;
 +    /* LPT mode only applies with the dock enabled and the parallel port on */
 +    int lptmode_valid = dock_valid && adv->lpt_port != 0;
 +    u8 lptmode_label_attr = lptmode_valid ? SETUP_ATTR_NORMAL : SETUP_ATTR_DISABLED;
-+    u8 lptmode_attr = adv->selected == 13 && focus == SETUP_FOCUS_PAGE
++    u8 lptmode_attr = adv->selected == 11 && focus == SETUP_FOCUS_PAGE
 +        ? SETUP_ATTR_SELECT : lptmode_label_attr;
++    u8 smm_attr = adv->selected == 12 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : smm_label_attr;
++    u8 wlan_attr = adv->selected == 13 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    u8 wwan_attr = adv->selected == 14 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
++    u8 bt_attr = adv->selected == 15 && focus == SETUP_FOCUS_PAGE
++        ? SETUP_ATTR_SELECT : SETUP_ATTR_NORMAL;
 +
 +    setup_clear_page();
 +    setup_draw_value_row(6, "SATA Mode", setup_sata_mode_name(adv->sata_mode),
@@ -2239,18 +2301,22 @@ index 1effd802..e5490ff4 100644
 +                         SETUP_ATTR_NORMAL, cores_attr);
 +    setup_draw_value_row(13, "CPU Caches", setup_cache_name(adv->cpu_cache),
 +                         SETUP_ATTR_NORMAL, cache_attr);
-+    setup_draw_value_row(14, "VGA Mux", setup_vga_mux_name(adv->vga_mux),
-+                         SETUP_ATTR_NORMAL, vga_attr);
-+    setup_draw_value_row(15, "Dock Super I/O", setup_dock_superio_name(adv->dock_superio),
++    setup_draw_value_row(14, "Dock Super I/O", setup_dock_superio_name(adv->dock_superio),
 +                         SETUP_ATTR_NORMAL, dock_attr);
-+    setup_draw_value_row(16, "Undock SMM handler", setup_dock_smm_name(adv->dock_smm),
-+                         smm_label_attr, smm_attr);
-+    setup_draw_value_row(17, "Serial Port (COM)", setup_com_port_name(adv->com_port),
++    setup_draw_value_row(15, "Serial Port (COM)", setup_com_port_name(adv->com_port),
 +                         com_label_attr, com_attr);
-+    setup_draw_value_row(18, "Parallel Port (LPT)", setup_lpt_port_name(adv->lpt_port),
++    setup_draw_value_row(16, "Parallel Port (LPT)", setup_lpt_port_name(adv->lpt_port),
 +                         lpt_label_attr, lpt_attr);
-+    setup_draw_value_row(19, "LPT Mode", setup_lpt_mode_name(adv->lpt_mode),
++    setup_draw_value_row(17, "LPT Mode", setup_lpt_mode_name(adv->lpt_mode),
 +                         lptmode_label_attr, lptmode_attr);
++    setup_draw_value_row(18, "Undock/RFKILL SMM handler", setup_dock_smm_name(adv->dock_smm),
++                         smm_label_attr, smm_attr);
++    setup_draw_value_row(19, "WLAN", setup_radio_name(adv->wlan),
++                         SETUP_ATTR_NORMAL, wlan_attr);
++    setup_draw_value_row(20, "WWAN/SWLAN", setup_radio_name(adv->wwan),
++                         SETUP_ATTR_NORMAL, wwan_attr);
++    setup_draw_value_row(21, "Bluetooth", setup_radio_name(adv->bluetooth),
++                         SETUP_ATTR_NORMAL, bt_attr);
 +    setup_footer("F1 Help  Tab Menu  F9 Defaults  F10 Save  ESC Reboot  Left/Right Change");
 +}
 +
@@ -2483,40 +2549,52 @@ index 1effd802..e5490ff4 100644
 +                line3 = "";
 +                action = "Press F10 to save, then reboot.";
 +            } else if (adv->selected == 8) {
-+                title = "VGA Mux";
-+                line1 = "Routes the external VGA output.";
-+                line2 = "Connector selects laptop VGA; Dock selects dock VGA.";
-+                line3 = "";
-+                action = "Press F10 to save, then reboot.";
-+            } else if (adv->selected == 9) {
 +                title = "Dock Super I/O";
 +                line1 = "Master switch for the docking-station Super I/O.";
 +                line2 = "Disable skips all dock init: no ports, no ACPI,";
 +                line3 = "no SMM undock guard.";
 +                action = "Press F10 to save, then reboot.";
-+            } else if (adv->selected == 10) {
-+                title = "Undock SMM handler";
-+                line1 = "Drops dock forwarding from SMM when the laptop";
-+                line2 = "is undocked, so the LPC bus never hangs. Starts";
-+                line3 = "~90 s after boot; undocking earlier is unguarded.";
-+                action = "Press F10 to save, then reboot.";
-+            } else if (adv->selected == 11) {
++            } else if (adv->selected == 9) {
 +                title = "Serial Port (COM)";
 +                line1 = "Docking-station serial port address and IRQ.";
 +                line2 = "COM1/COM3 use IRQ4; COM2/COM4 use IRQ3.";
 +                line3 = "Requires the docking station.";
 +                action = "Press F10 to save, then reboot.";
-+            } else if (adv->selected == 12) {
++            } else if (adv->selected == 10) {
 +                title = "Parallel Port (LPT)";
 +                line1 = "Docking-station parallel port address and IRQ.";
 +                line2 = "LPT1 378h is polled; LPT2 278h uses IRQ5.";
 +                line3 = "Requires the docking station.";
 +                action = "Press F10 to save, then reboot.";
-+            } else {
++            } else if (adv->selected == 11) {
 +                title = "LPT Mode";
 +                line1 = "AT: standard printer, output only.";
 +                line2 = "PS2: bidirectional. ECP: adds 778h + high speed.";
 +                line3 = "Only applies when the parallel port is enabled.";
++                action = "Press F10 to save, then reboot.";
++            } else if (adv->selected == 12) {
++                title = "Undock/RFKILL SMM handler";
++                line1 = "Runs the wireless kill switch, and when docked";
++                line2 = "drops dock forwarding on undock so the LPC bus";
++                line3 = "never hangs. Starts ~90 s after boot.";
++                action = "Press F10 to save, then reboot.";
++            } else if (adv->selected == 13) {
++                title = "WLAN";
++                line1 = "Primary wireless (WiFi) radio.";
++                line2 = "The hardware wireless switch can force it off.";
++                line3 = "";
++                action = "Press F10 to save, then reboot.";
++            } else if (adv->selected == 14) {
++                title = "WWAN/SWLAN";
++                line1 = "Radio on the WWAN / mSATA connector";
++                line2 = "(Secondary WLAN). Switch can force it off.";
++                line3 = "";
++                action = "Press F10 to save, then reboot.";
++            } else {
++                title = "Bluetooth";
++                line1 = "Bluetooth radio.";
++                line2 = "The hardware wireless switch can force it off.";
++                line3 = "";
 +                action = "Press F10 to save, then reboot.";
 +            }
 +        } else if (menu == SETUP_MENU_BOOT) {
@@ -2654,6 +2732,9 @@ index 1effd802..e5490ff4 100644
 +    adv.com_port = setup_read_com_port();
 +    adv.lpt_port = setup_read_lpt_port();
 +    adv.lpt_mode = setup_read_lpt_mode();
++    adv.wlan = setup_read_wlan();
++    adv.wwan = setup_read_wwan();
++    adv.bluetooth = setup_read_bluetooth();
 +    adv.selected = 0;
 +    boot.boot_order = setup_read_boot_order();
 +    boot.boot_delay = setup_read_boot_delay();
@@ -2787,9 +2868,9 @@ index 1effd802..e5490ff4 100644
 +                    continue;
 +                }
 +                if (scan_code == SETUP_KEY_UP)
-+                    adv.selected = adv.selected == 0 ? 13 : adv.selected - 1;
++                    adv.selected = adv.selected == 0 ? 15 : adv.selected - 1;
 +                else
-+                    adv.selected = adv.selected == 13 ? 0 : adv.selected + 1;
++                    adv.selected = adv.selected == 15 ? 0 : adv.selected + 1;
 +                setup_draw_advanced_page(&adv, focus);
 +                setup_clear_message();
 +                continue;
@@ -2825,38 +2906,41 @@ index 1effd802..e5490ff4 100644
 +                } else if (adv.selected == 7) {
 +                    adv.cpu_cache = !adv.cpu_cache;
 +                } else if (adv.selected == 8) {
-+                    adv.vga_mux = !adv.vga_mux;
-+                } else if (adv.selected == 9) {
 +                    adv.dock_superio = !adv.dock_superio;
-+                } else if (adv.selected == 10) {
-+                    if (adv.dock_superio)
-+                        adv.dock_smm = !adv.dock_smm;
-+                } else if (adv.selected == 11) {
++                } else if (adv.selected == 9) {
 +                    if (adv.dock_superio) {
 +                        if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_MINUS)
 +                            adv.com_port = adv.com_port == 0 ? 4 : adv.com_port - 1;
 +                        else
 +                            adv.com_port = adv.com_port == 4 ? 0 : adv.com_port + 1;
 +                    }
-+                } else if (adv.selected == 12) {
++                } else if (adv.selected == 10) {
 +                    if (adv.dock_superio) {
 +                        if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_MINUS)
 +                            adv.lpt_port = adv.lpt_port == 0 ? 2 : adv.lpt_port - 1;
 +                        else
 +                            adv.lpt_port = adv.lpt_port == 2 ? 0 : adv.lpt_port + 1;
 +                    }
-+                } else {
++                } else if (adv.selected == 11) {
 +                    if (adv.dock_superio && adv.lpt_port != 0) {
 +                        if (scan_code == SETUP_KEY_LEFT || scan_code == SETUP_KEY_MINUS)
 +                            adv.lpt_mode = adv.lpt_mode == 0 ? 2 : adv.lpt_mode - 1;
 +                        else
 +                            adv.lpt_mode = adv.lpt_mode == 2 ? 0 : adv.lpt_mode + 1;
 +                    }
++                } else if (adv.selected == 12) {
++                    adv.dock_smm = !adv.dock_smm;
++                } else if (adv.selected == 13) {
++                    adv.wlan = !adv.wlan;
++                } else if (adv.selected == 14) {
++                    adv.wwan = !adv.wwan;
++                } else {
++                    adv.bluetooth = !adv.bluetooth;
 +                }
 +                setup_draw_advanced_page(&adv, focus);
 +                if (adv.selected == 1 && adv.sata_mode != 1)
 +                    setup_message("mSATA Controller requires IDE native mode.");
-+                else if (adv.selected >= 10 && adv.selected <= 13 && !adv.dock_superio)
++                else if (adv.selected >= 9 && adv.selected <= 11 && !adv.dock_superio)
 +                    setup_message("Enable Dock Super I/O first.");
 +            }
 +            if (scan_code == SETUP_KEY_F9) {
@@ -3386,8 +3470,8 @@ index 1effd802..e5490ff4 100644
 +    br.flags = F_IF;
 +    br.code = bootsegip;
 +    // Set the magic number in ax and the boot drive in dl.
-+    br.dl = bootdrv;
-+    br.ax = 0xaa55;
+     br.dl = bootdrv;
+     br.ax = 0xaa55;
 +    setup_3dfx_set_scaler_dos_aspect(1);
 +    /* Optional "cpu_cache" setup option: disable the CPU caches (no-fill
 +     * mode) as the very last step before jumping to the boot sector.
@@ -3407,7 +3491,7 @@ index 1effd802..e5490ff4 100644
  }
  
  // Boot from a disk (either floppy or harddrive)
-@@ -946,7 +3944,9 @@ boot_cbfs(struct cbfs_file *file)
+@@ -946,7 +4029,9 @@ boot_cbfs(struct cbfs_file *file)
      if (!CONFIG_COREBOOT_FLASH)
          return;
      printf("Booting from CBFS...\n");
