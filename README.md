@@ -98,6 +98,7 @@ reimplementing the project.
 | FPU error reporting | Enables FERR#/IRQ 13 coprocessor error routing (OIC/GCS) like the OEM firmware, for DOS and Win9x-era software. |
 | Audio | Supplies Realtek ALC292 verbs, adds early HDA disable support, and sends the Dell EC speaker-unmute command required for working audio. |
 | Dell EC | Routes power-button events to the host OS and controls the dGPU VGA mux for either the laptop or docking-station connector. |
+| Wireless radios | Sets the WLAN, WWAN/SWLAN, and Bluetooth radios at boot from CMOS setup options and enforces the laptop's physical wireless switch in SMM: turning it off kills every radio and turning it on restores each to its setup option, making the switch a hard master over the individual radios independently of the operating system. |
 | Docking Super I/O | Brings up the docking station's SMSC LPC47N237 serial and parallel ports. The LPC47N237 lives in the dock and is reached over a secondary LPC bus driven by the laptop's ENE ECE5048 controller. The firmware brings this path up by configuring the ECE5048 and issuing a dock-enable command to the MEC5075, then programs the ports from CMOS setup options (COM1-4, LPT1/LPT2, and AT/PS2/ECP parallel mode), gates them on dock presence via the Super I/O chip ID, and enumerates them to the operating system through a generated SSDT. |
 | SeaBIOS keyboard | Updates Caps Lock, Num Lock, and Scroll Lock LEDs directly so they work under DOS, Windows 98, and Windows XP. |
 | SeaBIOS integration | Applies the project SeaBIOS patches automatically during the coreboot build and embeds the configurable boot-menu wait value. |
@@ -123,6 +124,7 @@ The following table records configurations tested with this firmware.
 | Laptop headphone jack | Confirmed[^5] | Confirmed | Confirmed |
 | Ethernet | Confirmed[^6] | Confirmed | Confirmed |
 | Wi-Fi and Bluetooth | X | Confirmed | Confirmed |
+| Wireless kill switch | Confirmed | Confirmed | Confirmed |
 | SD card reader | Confirmed[^8] | Confirmed | Confirmed |
 | ExpressCard slot | Confirmed | Confirmed | Confirmed |
 | Internal keyboard and touchpad | Confirmed | Confirmed | Confirmed |
