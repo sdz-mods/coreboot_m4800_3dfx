@@ -1,5 +1,5 @@
 diff --git a/src/boot.c b/src/boot.c
-index 1effd802..617a8d44 100644
+index 1effd802..79b114a0 100644
 --- a/src/boot.c
 +++ b/src/boot.c
 @@ -8,9 +8,12 @@
@@ -23,7 +23,7 @@ index 1effd802..617a8d44 100644
  
  /****************************************************************
   * Helper search functions
-@@ -456,11 +460,81 @@ static int BootRetryTime;
+@@ -456,11 +460,83 @@ static int BootRetryTime;
  static int CheckFloppySig = 1;
  
  #define DEFAULT_PRIO           9999
@@ -31,7 +31,9 @@ index 1effd802..617a8d44 100644
 +#define SETUP_CMOS_USB_FIXED_DISK	51
 +#define SETUP_USB_FIXED_AUTO	0
 +#define SETUP_USB_FIXED_ALL	1
-+#define SETUP_CMOS_SD_FIXED_DISK	51	/* bit 4 (USB uses bit 3) */
++/* Byte 51 is full (bit 4 is the Bluetooth radio), so SD mapping shares the
++   CPU-options byte 72, using its one free bit 7 (CPU options use bits 0-6). */
++#define SETUP_CMOS_SD_FIXED_DISK	72	/* bit 7 */
 +#define SETUP_SD_FIXED_AUTO	0
 +#define SETUP_SD_FIXED_ALL	1
  
@@ -96,7 +98,7 @@ index 1effd802..617a8d44 100644
 +static int
 +setup_sd_fixed_disk_mode(void)
 +{
-+    u8 mode = (setup_cmos_read(SETUP_CMOS_SD_FIXED_DISK) >> 4) & 0x01;
++    u8 mode = (setup_cmos_read(SETUP_CMOS_SD_FIXED_DISK) >> 7) & 0x01;
 +
 +    if (mode > SETUP_SD_FIXED_ALL)
 +        mode = SETUP_SD_FIXED_AUTO;
@@ -106,7 +108,7 @@ index 1effd802..617a8d44 100644
  
  void
  boot_init(void)
-@@ -487,6 +561,8 @@ boot_init(void)
+@@ -487,6 +563,8 @@ boot_init(void)
              case 4: DefaultBEVPrio = i;    break;
              }
          }
@@ -115,7 +117,7 @@ index 1effd802..617a8d44 100644
      }
  
      BootRetryTime = romfile_loadint("etc/boot-fail-wait", 60*1000);
-@@ -521,6 +597,19 @@ static struct hlist_head BootList VARVERIFY32INIT;
+@@ -521,6 +599,19 @@ static struct hlist_head BootList VARVERIFY32INIT;
  #define IPL_TYPE_BCV         0x81
  #define IPL_TYPE_HALT        0xf0
  
@@ -135,7 +137,7 @@ index 1effd802..617a8d44 100644
  static void
  bootentry_add(int type, int prio, u32 data, const char *desc)
  {
-@@ -593,7 +682,12 @@ boot_add_floppy(struct drive_s *drive, const char *desc, int prio)
+@@ -593,7 +684,12 @@ boot_add_floppy(struct drive_s *drive, const char *desc, int prio)
  void
  boot_add_hd(struct drive_s *drive, const char *desc, int prio)
  {
@@ -149,7 +151,7 @@ index 1effd802..617a8d44 100644
                    , (u32)drive, desc);
  }
  
-@@ -618,7 +712,7 @@ boot_add_cd(struct drive_s *drive, const char *desc, int prio)
+@@ -618,7 +714,7 @@ boot_add_cd(struct drive_s *drive, const char *desc, int prio)
  void
  boot_add_cbfs(void *data, const char *desc, int prio)
  {
@@ -158,7 +160,7 @@ index 1effd802..617a8d44 100644
  }
  
  
-@@ -681,6 +775,229 @@ get_keystroke(int msec)
+@@ -681,6 +777,229 @@ get_keystroke(int msec)
   ****************************************************************/
  
  #define DEFAULT_BOOTMENU_WAIT 2500
@@ -388,7 +390,7 @@ index 1effd802..617a8d44 100644
  
  static const char menuchars[] = {
      '1', '2', '3', '4', '5', '6', '7', '8', '9',
-@@ -690,188 +1007,2954 @@ static const char menuchars[] = {
+@@ -690,188 +1009,2954 @@ static const char menuchars[] = {
      'u', 'v', 'w', 'x', 'y', 'z'
  };
  
@@ -890,7 +892,7 @@ index 1effd802..617a8d44 100644
 +static u8
 +setup_read_sd_fixed_disk(void)
 +{
-+    u8 mode = (setup_cmos_read(SETUP_CMOS_SD_FIXED_DISK) >> 4) & 0x01;
++    u8 mode = (setup_cmos_read(SETUP_CMOS_SD_FIXED_DISK) >> 7) & 0x01;
 +
 +    if (mode > SETUP_SD_FIXED_ALL)
 +        mode = SETUP_SD_FIXED_DEFAULT;
@@ -1129,7 +1131,7 @@ index 1effd802..617a8d44 100644
 +{
 +    u8 value = setup_cmos_read(SETUP_CMOS_SD_FIXED_DISK);
 +
-+    value = (value & ~0x10) | ((mode & 0x01) << 4);
++    value = (value & ~0x80) | ((mode & 0x01) << 7);
 +    setup_cmos_write(SETUP_CMOS_SD_FIXED_DISK, value);
 +}
 +
@@ -3491,7 +3493,7 @@ index 1effd802..617a8d44 100644
  }
  
  // Boot from a disk (either floppy or harddrive)
-@@ -946,7 +4029,9 @@ boot_cbfs(struct cbfs_file *file)
+@@ -946,7 +4031,9 @@ boot_cbfs(struct cbfs_file *file)
      if (!CONFIG_COREBOOT_FLASH)
          return;
      printf("Booting from CBFS...\n");

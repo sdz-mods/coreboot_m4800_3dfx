@@ -69,6 +69,11 @@ entries
 580	2	e	24	cpu_cores
 582	1	e	1	cpu_cache
 
+# SeaBIOS-only setup bits (not coreboot options, so not declared as entries):
+# byte 51 bit 3 (offset 411) = USB Disk Mapping, byte 72 bit 7 (offset 583) =
+# SD Card Mapping. Both are inside the checksummed range and preserved by
+# SeaBIOS's read-modify-write. Do not assign coreboot options to these bits.
+
 # coreboot config options: check sums
 984	16	h	0	check_sum
 
