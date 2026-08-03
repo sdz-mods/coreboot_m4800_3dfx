@@ -36,6 +36,31 @@
 #define DOCK_UNDOCK_DEBOUNCE	2	/* consecutive undock reads (~32 ms) */
 
 /*
+ * Wireless hardware switch. The ECE5048 senses the physical switch and mirrors
+ * its position into MEC EC RAM byte 0x05 bit 0 (1 = radios on, 0 = off/airplane).
+ * The radios themselves are driven with the MEC5035 radio-control command over
+ * the command mailbox (index/data at
+ * 0x910/0x911, register N addressed as N+0x10) - distinct from the ACPI EC
+ * interface used for the reads above. This mirrors mec5035_control_radio().
+ */
+#define EC_RADIO_BYTE		0x05
+#define EC_MBOX_IDX		0x910
+#define EC_MBOX_DATA		0x911
+#define CMD_RADIO_CTRL		0x2b
+#define RADIO_WLAN		0
+#define RADIO_WWAN		1	/* the WWAN/mSATA connector (a.k.a. SWLAN) */
+#define RADIO_BT		2
+#define RADIO_OFF		0
+#define RADIO_ON		1
+
+/* Per-radio enable options in CMOS (cmos.layout / SeaBIOS setup): byte 0x33,
+   bit 7 = WLAN, bit 5 = WWAN, bit 4 = Bluetooth. */
+#define CMOS_RADIO_BYTE		0x33
+#define CMOS_WLAN_BIT		(1 << 7)
+#define CMOS_WWAN_BIT		(1 << 5)
+#define CMOS_BT_BIT		(1 << 4)
+
+/*
  * Leave the EC completely alone for the first ~90 s after boot (5625 ticks
  * at 16 ms). Windows 98's boot-time EC handling is disrupted by the polling
  * (slow, choppy loading screen that never finishes); by the time the grace
@@ -74,11 +99,49 @@ static int ec_read(u8 addr, u8 *val)
 	return 0;
 }
 
+/* Raw CMOS read (matches coreboot's cmos_read: index to 0x70, data from 0x71). */
+static u8 smm_cmos_read(u8 addr)
+{
+	outb(addr, 0x70);
+	return inb(0x71);
+}
+
+static void ec_mbox_set(u8 index, u8 data)
+{
+	outb(index + 0x10, EC_MBOX_IDX);
+	outb(data, EC_MBOX_DATA);
+}
+
+/* Mirror mec5035_control_radio() for SMM use, with a bounded EC-busy wait so a
+   wedged EC can never hang the handler. */
+static void smm_control_radio(u8 dev, u8 state)
+{
+	int t;
+
+	ec_mbox_set(2, dev);
+	ec_mbox_set(3, 2);	/* required constant, per the ramstage driver */
+	ec_mbox_set(4, state);
+	outb(0, EC_MBOX_IDX);
+	outb(CMD_RADIO_CTRL, EC_MBOX_DATA);
+	for (t = EC_POLL_MAX; t; t--) {		/* bounded wait_ec */
+		outb(0, EC_MBOX_IDX);
+		if (!inb(EC_MBOX_DATA))
+			break;
+	}
+}
+
+/*
+ * SW-SMI-timer handler (armed at boot in mainboard.c). Two independent EC jobs
+ * run on each ~16 ms tick: the wireless master switch (always) and the
+ * hot-undock teardown (until the dock is removed once).
+ */
 void mainboard_smi_swsmi_tmr(void)
 {
 	static unsigned int undock_seen, grace;
+	static int last_radio_sw = -1;	/* -1 until the first post-grace read */
+	static int dock_gone;		/* set once undock has been handled */
 	const u16 pmbase = get_pmbase();
-	u8 dock;
+	u8 v;
 
 	if (grace < DOCK_GRACE_TICKS) {
 		grace++;
@@ -88,23 +151,39 @@ void mainboard_smi_swsmi_tmr(void)
 	/* While a call32 transaction is in flight the ENTER handler has masked
 	   this timer and RETURN re-arms it. Do nothing so that management stands
 	   (re-arming here would race it and could let the timer fire on the
-	   borrowed 32-bit context). The dock state is caught on a later tick. */
+	   borrowed 32-bit context). State is caught on a later tick. */
 	if (call32_smm_in_flight)
 		return;
 
-	if (ec_read(EC_DOCK_BYTE, &dock) == 0) {
-		if (dock == 0x01) {
-			undock_seen = 0;
-		} else if (++undock_seen >= DOCK_UNDOCK_DEBOUNCE) {
-			/* Dock gone: kill forwarding before any access to the
-			   vanished ports can stall the bus, then stop the timer
-			   (a redock needs a reboot to reprogram the dock). */
-			outb(0x00, ECE5048_CTRL);
-			outl(inl(pmbase + SMI_EN) & ~SWSMI_TMR_EN, pmbase + SMI_EN);
-			return;
+	/*
+	 * Wireless master switch. On a change drive the radios: off kills all;
+	 * on restores each radio to its CMOS enable option. The physical switch
+	 * is thus a hard master over the per-radio options.
+	 */
+	if (ec_read(EC_RADIO_BYTE, &v) == 0) {
+		const int on = v & 1;
+		if (on != last_radio_sw) {
+			const u8 opt = on ? smm_cmos_read(CMOS_RADIO_BYTE) : 0;
+			smm_control_radio(RADIO_WLAN, (opt & CMOS_WLAN_BIT) ? RADIO_ON : RADIO_OFF);
+			smm_control_radio(RADIO_WWAN, (opt & CMOS_WWAN_BIT) ? RADIO_ON : RADIO_OFF);
+			smm_control_radio(RADIO_BT,   (opt & CMOS_BT_BIT)   ? RADIO_ON : RADIO_OFF);
+			last_radio_sw = on;
 		}
 	}
-	/* EC busy this tick: leave the debounce alone and just re-arm. */
+
+	/*
+	 * Hot-undock teardown. Kill dock-LPC forwarding before a stalled cycle
+	 * can hang the bus, then stop checking - but, unlike before, keep the
+	 * timer running for the switch above (a redock still needs a reboot).
+	 */
+	if (!dock_gone && ec_read(EC_DOCK_BYTE, &v) == 0) {
+		if (v == 0x01)
+			undock_seen = 0;
+		else if (++undock_seen >= DOCK_UNDOCK_DEBOUNCE) {
+			outb(0x00, ECE5048_CTRL);
+			dock_gone = 1;
+		}
+	}
 
 rearm:
 	/* The SWSMI timer is a one-shot; re-arm by toggling enable 1->0->1. */

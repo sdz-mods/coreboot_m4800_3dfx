@@ -79,23 +79,24 @@ static void park_cpu_threads(void *unused)
 BOOT_STATE_INIT_ENTRY(BS_WRITE_TABLES, BS_ON_ENTRY, park_cpu_threads, NULL);
 
 /*
- * Arm the PCH software-SMI timer so the SMM handler (smihandler.c) can poll
- * dock presence (EC RAM byte 0x2D) and drop the ECE5048 dock-LPC forwarding
- * the instant the dock leaves. On an undocked boot the handler simply tears
- * down once and stops the timer.
+ * Arm the PCH software-SMI timer so the SMM handler (smihandler.c) can service
+ * two EC-sensed events: the wireless kill switch (EC RAM byte 0x05) and, when a
+ * dock is present, hot-undock teardown of the ECE5048 dock-LPC forwarding (EC
+ * RAM byte 0x2D). Because the switch must work regardless of the dock, arm on
+ * the handler's own option alone - not gated by the dock Super I/O setting.
  */
 #define SWSMI_TMR_STS		(1 << 6)	/* SMI_STS bit 6 (W1C) */
 #define SWSMI_RATE_SEL_MASK	(3 << 6)	/* GEN_PMCON_3[7:6] */
 #define SWSMI_RATE_SEL_16MS	(1 << 6)	/* 01b = 16 ms */
 
-static void dock_arm_undock_smi(void *unused)
+static void arm_ec_event_smi(void *unused)
 {
 	u16 pmbase;
 	u8 pmcon3;
 
-	/* Arm only when the dock Super I/O and its SMM undock guard are both
-	   enabled in setup. */
-	if (!get_uint_option("dock_superio", 0) || !get_uint_option("dock_smm", 1))
+	/* Gated only by its own setup option ("Undock/RFKILL SMM handler"), so the
+	   wireless switch still works with the dock Super I/O disabled. */
+	if (!get_uint_option("dock_smm", 1))
 		return;
 
 	/* Software-SMI timer rate = 16 ms (GEN_PMCON_3[7:6] = 01b). */
@@ -107,7 +108,7 @@ static void dock_arm_undock_smi(void *unused)
 	outl(SWSMI_TMR_STS, pmbase + SMI_STS);			/* clear stale status */
 	outl(inl(pmbase + SMI_EN) | SWSMI_TMR_EN, pmbase + SMI_EN);	/* arm one-shot */
 }
-BOOT_STATE_INIT_ENTRY(BS_POST_DEVICE, BS_ON_ENTRY, dock_arm_undock_smi, NULL);
+BOOT_STATE_INIT_ENTRY(BS_POST_DEVICE, BS_ON_ENTRY, arm_ec_event_smi, NULL);
 
 void mainboard_fill_fadt(acpi_fadt_t *fadt)
 {
